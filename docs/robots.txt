@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://joyozhang333-lgtm.github.io/decision-cabinet/sitemap.xml

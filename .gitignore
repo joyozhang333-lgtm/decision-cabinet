@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# 环境与本地数据
+.env
+.env.*
+!.env.example
+*.db
+cabinet.db
+
+# 前端
+web/node_modules/
+web/dist/
+.DS_Store
+
+# 本地工具与报告
+.claude/
+.gstack/
+.coverage
+htmlcov/
+coverage.xml
+.mypy_cache/
+.ruff_cache/
+*.log

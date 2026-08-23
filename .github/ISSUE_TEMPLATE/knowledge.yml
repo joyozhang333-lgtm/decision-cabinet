@@ -1,0 +1,24 @@
+name: Knowledge correction
+description: 补充或纠正知识卡、来源和适用边界
+title: "[Knowledge] "
+labels: [knowledge]
+body:
+  - type: input
+    id: card
+    attributes:
+      label: 知识卡 ID / 文件
+    validations:
+      required: true
+  - type: textarea
+    id: issue
+    attributes:
+      label: 需要纠正的内容
+    validations:
+      required: true
+  - type: textarea
+    id: sources
+    attributes:
+      label: 原始或权威来源
+      description: 请给出 URL、日期和支持哪项更正
+    validations:
+      required: true

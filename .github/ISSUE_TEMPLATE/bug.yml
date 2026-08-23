@@ -1,0 +1,30 @@
+name: Bug report
+description: 报告可复现的问题（请勿提交密钥或私人决策记录）
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "请先移除 API key、数据库内容和个人信息。"
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题
+      description: 实际发生了什么？你期望什么？
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / commit
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: OS、Python、Node、provider（不要粘贴密钥）

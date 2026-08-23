@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "decision-cabinet"
+version = "0.2.0"
+description = "Decision Cabinet：融合决策科学、商业金融、管理学与东方智慧的开源 AI 决策支持系统。"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_CONTENT.md"]
+authors = [{ name = "Decision Cabinet contributors" }]
+keywords = [
+  "decision support",
+  "advisory council",
+  "ai board of advisors",
+  "mental models",
+  "decision journal",
+  "决策内阁",
+  "决策辅助",
+  "私人董事会",
+  "谋士团",
+  "多元思维模型",
+  "investment decision",
+  "scenario planning",
+  "knowledge base",
+  "decision journal",
+]
+
+# 核心引擎零第三方依赖：DeepSeek 通过标准库 HTTP 客户端访问。
+dependencies = []
+
+[project.optional-dependencies]
+web = [
+  "fastapi>=0.110.0",
+  "uvicorn[standard]>=0.27.0",
+]
+claude = [
+  "anthropic>=0.40.0",
+]
+dev = [
+  "pytest>=8.0.0",
+  "build>=1.2.0",
+  "httpx>=0.27.0",
+  "fastapi>=0.110.0",
+  "uvicorn[standard]>=0.27.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["cabinet*"]
+
+[tool.setuptools.package-data]
+cabinet = [
+  "resources/advisors/*.md",
+  "resources/advisors/*.json",
+  "resources/canon/*/*.md",
+  "resources/knowledge/*/*.md",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

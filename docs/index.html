@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>决策内阁 Decision Cabinet｜开源 AI 商业、股票与人生决策支持系统</title>
+  <meta name="description" content="决策内阁是一个开源 AI 决策支持系统与私人董事会：从事实、选择、代价、二阶效应、阴阳循环与局势演化出发，辅助商业经营、股票投资、管理和人生转折。">
+  <meta name="keywords" content="AI决策系统,决策支持,商业决策,股票分析,投资决策,管理学,私人董事会,决策日志,情景规划,阴阳循环,中国传统文化,开源AI">
+  <meta name="author" content="Decision Cabinet contributors">
+  <meta name="robots" content="index,follow,max-image-preview:large">
+  <link rel="canonical" href="https://joyozhang333-lgtm.github.io/decision-cabinet/">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:site_name" content="Decision Cabinet">
+  <meta property="og:title" content="决策内阁｜看清选择、代价与局势演化">
+  <meta property="og:description" content="融合决策科学、商业金融、管理学与东方智慧的开源 AI 私董会。">
+  <meta property="og:url" content="https://joyozhang333-lgtm.github.io/decision-cabinet/">
+  <meta property="og:image" content="https://joyozhang333-lgtm.github.io/decision-cabinet/social-preview.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="决策内阁 · Decision Cabinet">
+  <meta name="twitter:description" content="看清事实、选择、代价、阴阳循环与局势演化的开源 AI 决策系统。">
+  <meta name="twitter:image" content="https://joyozhang333-lgtm.github.io/decision-cabinet/social-preview.png">
+  <meta name="theme-color" content="#f5f2ec">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Decision Cabinet / 决策内阁",
+    "alternateName": "AI 决策内阁",
+    "description": "Open-source AI decision-support system for business, investing, management, and life transitions.",
+    "applicationCategory": ["BusinessApplication", "FinanceApplication"],
+    "operatingSystem": "macOS, Linux, Windows",
+    "softwareVersion": "0.2.0",
+    "url": "https://joyozhang333-lgtm.github.io/decision-cabinet/",
+    "downloadUrl": "https://github.com/joyozhang333-lgtm/decision-cabinet",
+    "codeRepository": "https://github.com/joyozhang333-lgtm/decision-cabinet",
+    "license": "https://opensource.org/license/mit",
+    "isAccessibleForFree": true,
+    "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+    "inLanguage": ["zh-CN", "en"]
+  }
+  </script>
+  <style>
+    :root{--bg:#f5f2ec;--paper:#fbf9f5;--ink:#23211c;--soft:#5b564c;--faint:#8a8475;--line:#ded5c5;--brown:#7c5c3e;--sage:#5a6b54;--red:#9e3b34;--shadow:0 18px 60px rgba(50,39,25,.09)}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font-family:"PingFang SC","Noto Sans SC",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.75}a{color:inherit}.wrap{width:min(1120px,calc(100% - 40px));margin:auto}
+    nav{height:72px;display:flex;align-items:center;gap:28px;border-bottom:1px solid rgba(124,92,62,.16)}.brand{font-family:"Songti SC","Noto Serif SC",serif;font-size:21px;font-weight:700;letter-spacing:3px;text-decoration:none}.brand small{font-family:Arial,sans-serif;font-size:10px;color:var(--faint);letter-spacing:2px;margin-left:9px}.navlinks{margin-left:auto;display:flex;gap:22px}.navlinks a{font-size:13px;color:var(--soft);text-decoration:none}.button{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--ink);border-radius:999px;padding:10px 19px;text-decoration:none;font-size:13px}.button.primary{background:var(--ink);color:var(--paper)}
+    .hero{padding:100px 0 86px;display:grid;grid-template-columns:1.1fr .9fr;gap:72px;align-items:center}.eyebrow{font-size:12px;letter-spacing:4px;color:var(--brown);text-transform:uppercase}.hero h1{font-family:"Songti SC","Noto Serif SC",serif;font-size:clamp(50px,7vw,88px);line-height:1.08;margin:18px 0 22px;letter-spacing:2px}.hero h1 span{display:block;font-family:Arial,sans-serif;font-size:.28em;letter-spacing:8px;color:var(--faint);margin-top:18px;font-weight:400}.hero .lead{font-size:19px;color:var(--soft);max-width:650px}.actions{display:flex;gap:12px;margin-top:30px;flex-wrap:wrap}.hero-map{position:relative;background:var(--paper);border:1px solid var(--line);border-radius:24px;padding:28px;box-shadow:var(--shadow);overflow:hidden}.hero-map:after{content:"";position:absolute;width:260px;height:260px;border:1px solid rgba(124,92,62,.18);border-radius:50%;right:-120px;top:-120px}.map-title{font-family:"Songti SC",serif;font-size:24px;margin:4px 0 22px}.map-row{display:grid;grid-template-columns:72px 1fr;gap:12px;border-top:1px solid var(--line);padding:13px 0;font-size:13px}.map-row span{color:var(--faint)}.map-row strong{font-weight:500}.paths{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:18px}.path{background:#f0ece3;border-radius:9px;padding:10px;font-size:12px}.path b{display:block;color:var(--brown);margin-bottom:3px}
+    section{padding:84px 0}.section-head{max-width:720px;margin-bottom:36px}.section-head .num{color:var(--brown);letter-spacing:3px;font-size:11px}.section-head h2{font-family:"Songti SC","Noto Serif SC",serif;font-size:38px;line-height:1.3;margin:8px 0}.section-head p{color:var(--soft)}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card{background:var(--paper);border:1px solid var(--line);border-radius:17px;padding:24px}.card .icon{font-family:"Songti SC",serif;color:var(--brown);font-size:32px}.card h3{margin:10px 0 7px;font-size:17px}.card p{margin:0;color:var(--soft);font-size:14px}.flow{background:var(--ink);color:var(--paper)}.flow .section-head p{color:#bdb5a7}.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:#4b473f;border:1px solid #4b473f}.step{background:var(--ink);padding:25px;min-height:190px}.step b{color:#c8a983;font-size:12px;letter-spacing:2px}.step h3{font-size:17px}.step p{font-size:13px;color:#bdb5a7}
+    .knowledge{display:grid;grid-template-columns:.8fr 1.2fr;gap:60px;align-items:start}.knowledge-list{border-top:1px solid var(--line)}.knowledge-row{display:grid;grid-template-columns:150px 1fr;gap:18px;padding:18px 0;border-bottom:1px solid var(--line)}.knowledge-row strong{font-family:"Songti SC",serif}.knowledge-row span{font-size:14px;color:var(--soft)}.quote{font-family:"Songti SC","Noto Serif SC",serif;font-size:30px;line-height:1.55;margin:0}.quote small{display:block;font-family:inherit;font-size:14px;color:var(--faint);margin-top:18px}
+    .notice{border-left:3px solid var(--red);background:rgba(158,59,52,.05);padding:22px 25px;margin-top:28px;color:var(--soft);font-size:14px}.cta{padding:80px 0}.cta-box{background:var(--paper);border:1px solid var(--line);border-radius:24px;padding:56px;display:flex;align-items:center;gap:36px;box-shadow:var(--shadow)}.cta-box h2{font-family:"Songti SC",serif;font-size:34px;margin:0}.cta-box p{color:var(--soft);margin:7px 0 0}.cta-box .actions{margin:0 0 0 auto;flex-shrink:0}footer{border-top:1px solid var(--line);padding:30px 0 44px;color:var(--faint);font-size:12px}.foot{display:flex;justify-content:space-between;gap:20px}.foot a{color:var(--soft)}
+    @media(max-width:860px){.navlinks{display:none}.hero{grid-template-columns:1fr;padding:70px 0}.hero-map{max-width:620px}.grid3,.steps{grid-template-columns:1fr 1fr}.knowledge{grid-template-columns:1fr}.cta-box{align-items:flex-start;flex-direction:column}.cta-box .actions{margin:0}.foot{flex-direction:column}}@media(max-width:560px){.wrap{width:min(100% - 26px,1120px)}.brand small{display:none}.hero h1{font-size:50px}.hero .lead{font-size:16px}.grid3,.steps{grid-template-columns:1fr}.paths{grid-template-columns:1fr}.knowledge-row{grid-template-columns:1fr}.cta-box{padding:30px}.section-head h2{font-size:30px}}
+  </style>
+</head>
+<body>
+  <header class="wrap">
+    <nav aria-label="主导航">
+      <a class="brand" href="#top">决策内阁<small>DECISION CABINET</small></a>
+      <div class="navlinks"><a href="#capabilities">能力</a><a href="#process">过程</a><a href="#knowledge">知识库</a><a href="#safety">边界</a></div>
+      <a class="button" href="https://github.com/joyozhang333-lgtm/decision-cabinet">GitHub</a>
+    </nav>
+  </header>
+  <main id="top">
+    <div class="wrap hero">
+      <div>
+        <div class="eyebrow">Open-source AI decision support</div>
+        <h1>看清选择，<br>也看清代价。<span>DECISION CABINET</span></h1>
+        <p class="lead">从一个局部问题出发，逐步看清事实、选择、机会成本、二阶效应、阴阳循环与局势演化。你的 AI 私董会不替你拍板，只帮助你更清楚地承担自己的决定。</p>
+        <div class="actions"><a class="button primary" href="https://github.com/joyozhang333-lgtm/decision-cabinet">在 GitHub 获取</a><a class="button" href="https://github.com/joyozhang333-lgtm/decision-cabinet#快速开始">本地运行</a></div>
+      </div>
+      <aside class="hero-map" aria-label="决策地图示例">
+        <div class="eyebrow">Decision map</div><div class="map-title">这个选择，正在购买怎样的未来？</div>
+        <div class="map-row"><span>所得</span><strong>机会、增长、自由或确定性</strong></div>
+        <div class="map-row"><span>代价</span><strong>现金、时间、关系与被放弃的未来</strong></div>
+        <div class="map-row"><span>循环</span><strong>优势何时累积自己的反作用</strong></div>
+        <div class="map-row"><span>证据</span><strong>什么事实会让你改变判断</strong></div>
+        <div class="paths"><div class="path"><b>基准</b>条件延续</div><div class="path"><b>上行</b>假设被验证</div><div class="path"><b>下行</b>反证出现</div></div>
+      </aside>
+    </div>
+
+    <section id="capabilities"><div class="wrap">
+      <div class="section-head"><span class="num">01 / CAPABILITIES</span><h2>不是更多意见，而是更完整的局面</h2><p>系统把答案拆回决策结构，让你知道每个判断从哪里来、还缺什么、何时应该改变。</p></div>
+      <div class="grid3">
+        <article class="card"><div class="icon">商</div><h3>商业与经营</h3><p>顾客价值、定价、单位经济、现金流、资本配置、增长、团队与组织承载力。</p></article>
+        <article class="card"><div class="icon">财</div><h3>金融与股票</h3><p>原始披露、三表、估值区间、仓位、流动性、周期、反证与退出条件。</p></article>
+        <article class="card"><div class="icon">生</div><h3>人生重要转折</h3><p>职业、城市、关系、责任与长期方向。看清你选择怎样的生活、承担什么代价。</p></article>
+      </div>
+    </div></section>
+
+    <section class="flow" id="process"><div class="wrap">
+      <div class="section-head"><span class="num">02 / PROCESS</span><h2>从事实，到演化，再回到你</h2><p>一场好讨论有次序。它不急着给答案，而是先把地基、张力和变化摆清楚。</p></div>
+      <div class="steps">
+        <article class="step"><b>STEP 01</b><h3>厘清事实</h3><p>分开事实、假设、未知与证据缺口，问出真正决定成败的信息。</p></article>
+        <article class="step"><b>STEP 02</b><h3>展开代价</h3><p>逐项比较所得、直接代价、机会成本、二阶效应与可逆性。</p></article>
+        <article class="step"><b>STEP 03</b><h3>观察演化</h3><p>建立基准、上行、下行路径，写清触发条件、领先信号与预案。</p></article>
+        <article class="step"><b>STEP 04</b><h3>真实讨论</h3><p>不同顾问交锋，你可以随时插话和修正；主持人最后把决定权交还给你。</p></article>
+      </div>
+    </div></section>
+
+    <section id="knowledge"><div class="wrap knowledge">
+      <div><div class="eyebrow">Traceable knowledge</div><p class="quote">“知识不是用来压过你，而是用来帮你看见此前没看见的关系。”<small>每张知识卡都有方法、边界与来源。</small></p></div>
+      <div class="knowledge-list">
+        <div class="knowledge-row"><strong>决策科学</strong><span>决策质量、选择与代价、情景演化、可逆性、反馈回路</span></div>
+        <div class="knowledge-row"><strong>商业金融</strong><span>顾客价值、单位经济、资本配置、三张表、估值与组合风险</span></div>
+        <div class="knowledge-row"><strong>管理学</strong><span>有效性、治理与激励、风险管理、小步试验与组织反馈</span></div>
+        <div class="knowledge-row"><strong>中国与世界智慧</strong><span>《易经》《道德经》《论语》《孙子兵法》、缘起中道、王阳明与《先知》</span></div>
+      </div>
+    </div></section>
+
+    <section id="safety"><div class="wrap">
+      <div class="section-head"><span class="num">03 / SAFETY</span><h2>金融决策，先尊重证据和风险</h2><p>系统不接实时行情时，就明确说不知道。它要求投资讨论标注数据时点、原始披露、估值假设、仓位与论点失效条件。</p></div>
+      <div class="grid3"><article class="card"><h3>不伪造实时数据</h3><p>A 股回到交易所或巨潮，美股回到 SEC EDGAR。传闻不进入估值基准。</p></article><article class="card"><h3>不承诺收益</h3><p>给区间、条件与反证，不给确定目标价，也不把单个标的脱离整个资产负债。</p></article><article class="card"><h3>不替用户拍板</h3><p>重大投资、法律、医疗和税务事项应核验原始资料并咨询持牌专业人士。</p></article></div>
+      <div class="notice">重要声明：Decision Cabinet 仅用于教育、思考与决策支持，不构成投资建议、证券推荐、法律意见、医疗建议或税务建议，也不保证任何结果。AI 可能出错、遗漏或使用过时信息。</div>
+    </div></section>
+
+    <div class="wrap cta"><div class="cta-box"><div><h2>把决定看清，再亲自做决定。</h2><p>MIT 开源 · Python + FastAPI + React · 本地 SQLite</p></div><div class="actions"><a class="button primary" href="https://github.com/joyozhang333-lgtm/decision-cabinet">查看源代码</a><a class="button" href="https://github.com/joyozhang333-lgtm/decision-cabinet/issues">参与共建</a></div></div></div>
+  </main>
+  <footer><div class="wrap foot"><span>© 2026 Decision Cabinet contributors · MIT License</span><span><a href="https://github.com/joyozhang333-lgtm/decision-cabinet/blob/main/SECURITY.md">Security</a> · <a href="https://github.com/joyozhang333-lgtm/decision-cabinet/blob/main/CONTRIBUTING.md">Contributing</a></span></div></footer>
+</body>
+</html>

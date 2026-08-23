@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7f2e8"/>
+      <stop offset="1" stop-color="#e6dcc9"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <circle cx="1040" cy="110" r="260" fill="none" stroke="#7c5c3e" stroke-opacity=".12" stroke-width="2"/>
+  <circle cx="1050" cy="545" r="330" fill="none" stroke="#5a6b54" stroke-opacity=".12" stroke-width="2"/>
+  <path d="M970 80 C1190 190 870 400 1160 560" fill="none" stroke="#9e3b34" stroke-opacity=".28" stroke-width="4"/>
+  <text x="92" y="190" fill="#7c5c3e" font-family="Arial, PingFang SC, sans-serif" font-size="24" letter-spacing="8">OPEN SOURCE · AI DECISION SUPPORT</text>
+  <text x="86" y="310" fill="#23211c" font-family="Songti SC, Noto Serif SC, serif" font-size="94" font-weight="600">决策内阁</text>
+  <text x="92" y="378" fill="#5b564c" font-family="Arial, sans-serif" font-size="38" letter-spacing="5">DECISION CABINET</text>
+  <line x1="92" y1="430" x2="730" y2="430" stroke="#7c5c3e" stroke-opacity=".35"/>
+  <text x="92" y="492" fill="#5b564c" font-family="PingFang SC, Arial, sans-serif" font-size="28">看清事实 · 选择 · 代价 · 阴阳循环 · 局势演化</text>
+  <text x="92" y="548" fill="#8a8475" font-family="Arial, PingFang SC, sans-serif" font-size="21">Business · Investing · Management · Life Transitions</text>
+</svg>

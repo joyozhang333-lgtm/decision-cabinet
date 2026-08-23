@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -e '.[dev]'
+      - run: pytest -q
+      - if: matrix.python-version == '3.12'
+        run: |
+          python -m build --wheel
+          python -m venv /tmp/decision-cabinet-wheel
+          /tmp/decision-cabinet-wheel/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/decision-cabinet-wheel/bin/python -c "from cabinet.advisors import advisor_ids; from cabinet.knowledge import load_all_knowledge; assert len(advisor_ids()) >= 20; assert len(load_all_knowledge()) >= 20"
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm run build

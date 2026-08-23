@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use Decision Cabinet in research or a public project, please cite it as below."
+title: "Decision Cabinet: Open-source AI Decision Support"
+type: software
+authors:
+  - name: "Decision Cabinet contributors"
+version: 0.2.0
+date-released: 2026-08-23
+url: "https://github.com/joyozhang333-lgtm/decision-cabinet"
+repository-code: "https://github.com/joyozhang333-lgtm/decision-cabinet"
+license: MIT
+keywords:
+  - decision support
+  - artificial intelligence
+  - investment decision
+  - scenario planning
+  - decision journal
