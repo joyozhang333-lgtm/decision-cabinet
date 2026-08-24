@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AdvisorPublic, Citation, chat, listAdvisors } from "../api";
+import { isDemoMode } from "../demoApi";
 
 interface Msg {
   role: "user" | "assistant";
@@ -150,7 +151,7 @@ export default function ChatView({ provider }: { provider: string }) {
         </div>
         <label className="memory-consent chat-memory">
           <input type="checkbox" checked={includeMemory} onChange={(e) => setIncludeMemory(e.target.checked)} disabled={busy} />
-          <span>附带决策档案与最近已决/复盘记录给所选模型（默认关闭）</span>
+          <span>{isDemoMode ? "使用浏览器本地决策档案（不会上传）" : "附带决策档案与最近已决/复盘记录给所选模型（默认关闭）"}</span>
         </label>
       </section>
     </div>

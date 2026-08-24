@@ -19,6 +19,7 @@ cabinet.db
 # 前端
 web/node_modules/
 web/dist/
+web/public/demo-data.json
 .DS_Store
 
 # 本地工具与报告

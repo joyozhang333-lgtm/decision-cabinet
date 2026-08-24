@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getConfig, getUiApiKey, ProductConfig, setUiApiKey } from "./api";
+import { isDemoMode } from "./demoApi";
 import CouncilView from "./views/CouncilView";
 import ChatView from "./views/ChatView";
 import DecisionsView from "./views/DecisionsView";
@@ -21,7 +22,7 @@ export default function App() {
   const [config, setConfig] = useState<ProductConfig | null>(null);
   const [provider, setProvider] = useState<string>("");
   const [uiKey, setUiKeyState] = useState(() => getUiApiKey());
-  const remoteHost = !["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+  const remoteHost = !isDemoMode && !["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
 
   useEffect(() => {
     getConfig().then(setConfig).catch(() => setConfig(null));
@@ -47,18 +48,22 @@ export default function App() {
           ))}
         </nav>
         <div className="spacer" />
-        <div className="provider-pick">
-          <span>模型</span>
-          <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-            <option value="">默认（{config?.providers.default ?? "deepseek"}）</option>
-            {providerEntries.map(([name, info]) => (
-              <option key={name} value={name}>
-                {name}
-                {info.configured ? "" : "·未配置"}
-              </option>
-            ))}
-          </select>
-        </div>
+        {isDemoMode ? (
+          <div className="demo-mode-pill">浏览器演示 · 不上传数据</div>
+        ) : (
+          <div className="provider-pick">
+            <span>模型</span>
+            <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+              <option value="">默认（{config?.providers.default ?? "deepseek"}）</option>
+              {providerEntries.map(([name, info]) => (
+                <option key={name} value={name}>
+                  {name}
+                  {info.configured ? "" : "·未配置"}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         {remoteHost && (
           <div className="provider-pick">
             <span>访问密钥</span>
@@ -73,6 +78,12 @@ export default function App() {
           </div>
         )}
       </header>
+      {isDemoMode && (
+        <div className="demo-banner">
+          <span><b>在线体验版</b>：内置演示回应，数据只保存在当前浏览器，不调用外部模型。</span>
+          <a href="https://github.com/joyozhang333-lgtm/decision-cabinet">获取完整开源版</a>
+        </div>
+      )}
       <main className="container">
         {tab === "council" && <CouncilView provider={provider} />}
         {tab === "knowledge" && <KnowledgeView />}

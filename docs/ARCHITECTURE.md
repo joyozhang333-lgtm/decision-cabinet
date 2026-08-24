@@ -22,6 +22,8 @@ cabinet/ FastAPI + Python
 cabinet/resources/knowledge/：方法卡
 cabinet/resources/advisors/：顾问视角
 cabinet/resources/canon/：可引用经典与方法白名单
+
+scripts/export_demo_data.py：只导出公开字段，供 GitHub Pages Demo 使用
 ```
 
 ## 数据流
@@ -33,6 +35,12 @@ cabinet/resources/canon/：可引用经典与方法白名单
 5. 每位顾问看到历史发言与用户插话，按顺序形成真实交锋。
 6. 主持人收束并创建决策草稿；用户自己填写最终选择与理由。
 7. 决策写入 SQLite，后续复盘进入新的上下文。
+
+## GitHub Pages 在线 Demo
+
+在线 Demo 复用同一套 React 界面，但不运行 FastAPI，也不连接外部模型。构建时，`scripts/export_demo_data.py` 从仓库资源导出顾问和知识卡的公开字段；`web/src/demoApi.ts` 在浏览器内提供与现有前端兼容的只读目录、决策地图、多轮讨论、单聊、决策日志和档案接口。
+
+用户输入、决策日志和档案只写入当前浏览器的 `localStorage`。Demo 不导出顾问内部约束或经典正文，不提供实时金融数据，并在界面中持续标明它使用内置演示回应。GitHub Pages workflow 会把中英文产品页发布到根目录，把静态应用发布到 `/demo/`。
 
 ## 设计选择
 
