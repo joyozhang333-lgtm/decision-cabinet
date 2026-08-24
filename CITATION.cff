@@ -4,8 +4,8 @@ title: "Decision Cabinet: Open-source AI Decision Support"
 type: software
 authors:
   - name: "Decision Cabinet contributors"
-version: 0.2.0
-date-released: 2026-08-23
+version: 0.3.0
+date-released: 2026-08-25
 url: "https://github.com/joyozhang333-lgtm/decision-cabinet"
 repository-code: "https://github.com/joyozhang333-lgtm/decision-cabinet"
 license: MIT

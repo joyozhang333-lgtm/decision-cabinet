@@ -45,3 +45,23 @@ jobs:
       - run: npm ci
       - run: npm audit --audit-level=high
       - run: npm run build
+
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Export privacy-safe public catalog
+        run: python scripts/export_demo_data.py --output web/public/demo-data.json
+      - name: Build static browser demo
+        working-directory: web
+        run: |
+          npm ci
+          npm run build:demo

@@ -357,8 +357,19 @@ button.ghost.sm { padding: 5px 12px; font-size: 12px; }
 .knowledge-sources a:hover { text-decoration: underline; }
 .knowledge-sources a span { color: var(--ink-faint); font-size: 11px; }
 .knowledge-note { margin: 24px 0; color: var(--ink-faint); font-size: 12px; text-align: center; }
+.demo-mode-pill { border: 1px solid #a68a64; background: #f6efe3; color: #6f4d2d; border-radius: 999px; padding: 7px 12px; font-size: 12px; white-space: nowrap; }
+.demo-banner { width: min(1180px, calc(100% - 36px)); margin: 14px auto 0; padding: 11px 15px; border: 1px solid #d6c4a7; border-radius: 12px; background: #f7f0e5; color: #5d4a35; display: flex; justify-content: space-between; gap: 18px; font-size: 12px; }
+.demo-banner a { color: #6f4d2d; font-weight: 700; white-space: nowrap; }
+.boot-error { color: #8a2f25; font-size: 17px; margin: 12vh auto; max-width: 620px; padding: 32px; text-align: center; }
 .footer { margin-top: auto; border-top: 1px solid var(--line); padding: 18px 24px; color: var(--ink-faint); font-size: 12px; text-align: center; }
 @media (max-width: 720px) {
+  .topbar { gap: 10px; padding: 12px 18px; }
+  .tabs { margin-left: 0; min-width: 0; order: 3; overflow-x: auto; scrollbar-width: none; width: 100%; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { flex: 0 0 auto; font-size: 13px; padding: 7px 9px; }
+  .container { padding-left: 18px; padding-right: 18px; }
+  .demo-mode-pill { display: none; }
+  .demo-banner { align-items: flex-start; flex-direction: column; gap: 5px; }
   .knowledge-hero { align-items: flex-start; flex-direction: column; }
   .knowledge-stat { border-left: none; border-top: 1px solid var(--line); padding: 10px 0 0; }
   .knowledge-grid { grid-template-columns: 1fr; }

@@ -12,6 +12,7 @@ import {
   streamClose,
   streamRound,
 } from "../api";
+import { isDemoMode } from "../demoApi";
 
 const DEPTHS: [string, string][] = [
   ["brief", "简"],
@@ -286,7 +287,7 @@ export default function CouncilView({ provider }: { provider: string }) {
               onChange={(e) => changeMemoryConsent(e.target.checked)}
               disabled={mapBusy || clarifyBusy}
             />
-            <span>本轮向所选模型发送「决策档案」和最近已决/复盘记录（默认关闭）</span>
+            <span>{isDemoMode ? "本轮使用浏览器本地决策档案（不会上传）" : "本轮向所选模型发送「决策档案」和最近已决/复盘记录（默认关闭）"}</span>
           </label>
         )}
       </div>
@@ -500,7 +501,7 @@ function AdvisorPicker({
           );
         })}
       </div>
-      <div className="roster-hint muted">每位每轮都会调用一次模型。为控制成本与上下文，每轮最多 16 位；少而精往往议得更深。</div>
+      <div className="roster-hint muted">{isDemoMode ? "在线 Demo 使用内置演示回应，不调用外部模型；每轮最多 16 位。" : "每位每轮都会调用一次模型。为控制成本与上下文，每轮最多 16 位；少而精往往议得更深。"}</div>
     </div>
   );
 }

@@ -1,5 +1,7 @@
 # 决策内阁 · Decision Cabinet
 
+[中文](README.md) · [English](README_EN.md)
+
 [![CI](https://github.com/joyozhang333-lgtm/decision-cabinet/actions/workflows/ci.yml/badge.svg)](https://github.com/joyozhang333-lgtm/decision-cabinet/actions/workflows/ci.yml)
 [![GitHub Pages](https://github.com/joyozhang333-lgtm/decision-cabinet/actions/workflows/pages.yml/badge.svg)](https://github.com/joyozhang333-lgtm/decision-cabinet/actions/workflows/pages.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-7c5c3e.svg)](LICENSE)
@@ -18,7 +20,15 @@
 
 > 核心原则：如实照见，实事求是。先看事实，再看选择与代价，最后看局势如何变化。
 
-[产品介绍](https://joyozhang333-lgtm.github.io/decision-cabinet/) · [快速开始](#快速开始) · [知识库治理](docs/KNOWLEDGE-GOVERNANCE.md) · [参与贡献](CONTRIBUTING.md)
+[在线 Demo](https://joyozhang333-lgtm.github.io/decision-cabinet/demo/) · [中文产品介绍](https://joyozhang333-lgtm.github.io/decision-cabinet/) · [English Overview](https://joyozhang333-lgtm.github.io/decision-cabinet/en/) · [快速开始](#快速开始) · [知识库治理](docs/KNOWLEDGE-GOVERNANCE.md) · [参与贡献](CONTRIBUTING.md)
+
+![Decision Cabinet social preview](docs/social-preview.png)
+
+## 立即体验
+
+打开 [GitHub Pages 在线 Demo](https://joyozhang333-lgtm.github.io/decision-cabinet/demo/)，无需注册、无需 API Key。Demo 在浏览器内运行，内置 28 位方法视角顾问和 23 张可追溯知识卡；你可以完成厘清问题、决策地图、多轮圆桌、插话、收束、记录决策与复盘。
+
+Demo 使用内置演示回应，不调用外部大模型。决策档案和日志只保存在当前浏览器的 localStorage。要接入 DeepSeek、Claude 或 OpenAI-compatible 模型，请按下方步骤运行完整开源版。
 
 ## 它适合什么决策
 
@@ -181,7 +191,14 @@ pytest -q
 cd web && npm ci && npm run build
 ```
 
-CI 会对 Python 3.11/3.12 运行测试，并构建前端。提交 PR 前请按 [CONTRIBUTING.md](CONTRIBUTING.md) 完成知识来源、隐私、金融边界、产品逻辑与回归检查。
+复现无需后端的 GitHub Pages Demo：
+
+```bash
+python scripts/export_demo_data.py --output web/public/demo-data.json
+cd web && npm run build:demo
+```
+
+CI 会对 Python 3.11/3.12 运行测试，并构建完整前端和静态 Demo。提交 PR 前请按 [CONTRIBUTING.md](CONTRIBUTING.md) 完成知识来源、隐私、金融边界、产品逻辑与回归检查。
 
 ## 重要声明
 
@@ -191,6 +208,4 @@ CI 会对 Python 3.11/3.12 运行测试，并构建前端。提交 PR 前请按 
 
 [MIT](LICENSE) © Decision Cabinet contributors
 
----
-
-**English:** Decision Cabinet is an open-source AI decision-support system for business, investing, management, and life transitions. It maps facts, options, direct and opportunity costs, second-order effects, reversibility, opposing forces, and scenario evolution before convening a multi-perspective advisory council. It is educational software, not financial advice or a promise of outcomes.
+完整英文介绍见 [README_EN.md](README_EN.md)。

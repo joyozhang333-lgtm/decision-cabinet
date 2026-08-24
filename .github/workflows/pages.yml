@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "web/**"
+      - "cabinet/resources/**"
+      - "scripts/export_demo_data.py"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -25,10 +28,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/setup-python@v6
         with:
-          path: docs
+          python-version: "3.11"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Export public demo catalog
+        run: python scripts/export_demo_data.py --output web/public/demo-data.json
+      - name: Build interactive demo
+        working-directory: web
+        run: |
+          npm ci
+          npm run build:demo
+      - name: Assemble Pages artifact
+        run: |
+          mkdir -p _site/demo
+          cp -R docs/. _site/
+          cp -R web/dist/. _site/demo/
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

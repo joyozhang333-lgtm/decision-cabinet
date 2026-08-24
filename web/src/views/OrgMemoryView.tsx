@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { OrgMemory, getOrgMemory, putOrgMemory } from "../api";
+import { isDemoMode } from "../demoApi";
 
 type Draft = Omit<OrgMemory, "updated_at_utc">;
 
@@ -43,7 +44,7 @@ export default function OrgMemoryView() {
     <div>
       <p className="lead">
         这里写得越准，<span className="em">内阁越能在你允许时理解长期目标与现实边界</span>。
-        档案只保存在本地；默认不发送给外部模型，需在每轮圆桌或单聊中主动勾选。
+        {isDemoMode ? "档案只保存在当前浏览器，不会上传或发送给外部模型。" : "档案只保存在本地；默认不发送给外部模型，需在每轮圆桌或单聊中主动勾选。"}
       </p>
 
       <div className="card">
