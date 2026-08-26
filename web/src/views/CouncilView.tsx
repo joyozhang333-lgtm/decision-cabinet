@@ -622,6 +622,33 @@ export default function CouncilView({ provider }: { provider: string }) {
                 </div>
               )}
             </section>
+            {phase !== "closed" && (
+              <div className="card controls">
+                {phase === "idle" && !retryAttempt && !retryClose && transcript.length > 0 && round < 4 && (
+                  <FounderParticipation
+                    mode={participationMode}
+                    setMode={setParticipationMode}
+                    value={founderInput}
+                    setValue={setFounderInput}
+                    questions={latestSummary?.questions_for_user || []}
+                    answerQuestionIndex={answerQuestionIndex}
+                    setAnswerQuestionIndex={setAnswerQuestionIndex}
+                    nextRound={round + 1}
+                    onContinue={continueCouncil}
+                    onClose={closeCouncil}
+                  />
+                )}
+                {phase === "idle" && !retryClose && round === 4 && (
+                  <div className="round-complete">
+                    <div><strong>四轮议事已完成。</strong><span className="muted"> 现在请主持人保留少数意见，把决定权交回给你。</span></div>
+                    <button className="primary" onClick={closeCouncil}>请内阁收束</button>
+                  </div>
+                )}
+                {(phase === "running" || phase === "closing") && (
+                  <div className="muted">{phase === "closing" ? "主持人正在收束…" : "议事中…"}</div>
+                )}
+              </div>
+            )}
             <aside className="minutes-rail" aria-label="各轮议事纪要">
               {summaryList().map((summary) => <RoundSummaryPanel key={summary.round} summary={summary} open={summary.round === round} />)}
               {summaryList().length === 0 && (
@@ -630,35 +657,6 @@ export default function CouncilView({ provider }: { provider: string }) {
             </aside>
           </div>
         </>
-      )}
-
-      {/* 控制区 */}
-      {started && phase !== "closed" && (
-        <div className="card controls">
-          {phase === "idle" && !retryAttempt && !retryClose && transcript.length > 0 && round < 4 && (
-            <FounderParticipation
-              mode={participationMode}
-              setMode={setParticipationMode}
-              value={founderInput}
-              setValue={setFounderInput}
-              questions={latestSummary?.questions_for_user || []}
-              answerQuestionIndex={answerQuestionIndex}
-              setAnswerQuestionIndex={setAnswerQuestionIndex}
-              nextRound={round + 1}
-              onContinue={continueCouncil}
-              onClose={closeCouncil}
-            />
-          )}
-          {phase === "idle" && !retryClose && round === 4 && (
-            <div className="round-complete">
-              <div><strong>四轮议事已完成。</strong><span className="muted"> 现在请主持人保留少数意见，把决定权交回给你。</span></div>
-              <button className="primary" onClick={closeCouncil}>请内阁收束</button>
-            </div>
-          )}
-          {(phase === "running" || phase === "closing") && (
-            <div className="muted">{phase === "closing" ? "主持人正在收束…" : "议事中…"}</div>
-          )}
-        </div>
       )}
 
       {phase === "closed" && decisionId && (

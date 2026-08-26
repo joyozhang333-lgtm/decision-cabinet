@@ -10,13 +10,13 @@ import IntegrationsView from "./views/IntegrationsView";
 
 type Tab = "council" | "integrations" | "knowledge" | "chat" | "decisions" | "org";
 
-const TABS: [Tab, string][] = [
-  ["council", "私董会"],
-  ["integrations", "接入中心"],
-  ["knowledge", "知识地图"],
-  ["chat", "单聊"],
-  ["decisions", "决策日志"],
-  ["org", "决策档案"],
+const TABS: [Tab, string, string][] = [
+  ["council", "私董会", "私董会"],
+  ["integrations", "接入中心", "接入"],
+  ["knowledge", "知识地图", "知识"],
+  ["chat", "单聊", "单聊"],
+  ["decisions", "决策日志", "日志"],
+  ["org", "决策档案", "档案"],
 ];
 
 export default function App() {
@@ -38,16 +38,17 @@ export default function App() {
         <div className="brand">
           决策内阁<span className="en">DECISION CABINET</span>
         </div>
-        <nav className="tabs" role="tablist" aria-label="主导航">
-          {TABS.map(([key, label]) => (
+        <nav className="tabs" aria-label="主导航">
+          {TABS.map(([key, label, shortLabel]) => (
             <button
               key={key}
               className={tab === key ? "tab active" : "tab"}
               onClick={() => setTab(key)}
-              role="tab"
-              aria-selected={tab === key}
+              aria-current={tab === key ? "page" : undefined}
+              aria-label={label}
             >
-              {label}
+              <span className="tab-long">{label}</span>
+              <span className="tab-short" aria-hidden="true">{shortLabel}</span>
             </button>
           ))}
         </nav>
