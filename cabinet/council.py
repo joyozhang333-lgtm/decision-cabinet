@@ -626,6 +626,8 @@ def with_user_participation(
         entry = working[index]
         if entry.get("role") != "founder":
             continue
+        if int(entry.get("round") or 0) != round_index:
+            continue
         if str(entry.get("content") or "").strip() != content:
             continue
         working[index] = {
@@ -714,7 +716,7 @@ def build_round_agenda(
     )
 
 
-def _format_transcript(transcript: list[dict]) -> str:
+def _format_transcript(transcript: list[dict], *, include_ids: bool = False) -> str:
     rows: list[str] = []
     for e in transcript:
         round_index = int(e.get("round") or 0)
@@ -730,7 +732,15 @@ def _format_transcript(transcript: list[dict]) -> str:
         content = (e.get("content") or "").strip()
         if content:
             round_tag = f"【第 {round_index} 轮】" if round_index else ""
-            rows.append(f"{round_tag}{tag}{name}{relation}：{content}")
+            identifiers = ""
+            if include_ids:
+                entry_id = str(e.get("entry_id") or "（无）").strip()
+                speaker_id = str(e.get("speaker_id") or "（无）").strip()
+                reply_to_id = str(e.get("reply_to_id") or "（无）").strip()
+                identifiers = (
+                    f"【entry_id={entry_id}；speaker_id={speaker_id}；reply_to_id={reply_to_id}】"
+                )
+            rows.append(f"{round_tag}{identifiers}{tag}{name}{relation}：{content}")
     return "\n\n".join(rows)
 
 
@@ -1142,8 +1152,20 @@ def _fallback_round_summary(
         break
     positions = founder_position + advisor_positions
     usable = [position.claim for position in positions if position.claim and "本地占位" not in position.claim]
+    usable_advisor_views = [
+        turn.content
+        for turn in turn_list
+        if turn.content
+        and turn.provider != "local-fallback"
+        and "本地占位" not in turn.content
+    ]
     provisional = _bounded_items(usable, 3) or ("本轮尚未形成可核验的小结论。",)
-    consensus = _bounded_items(("各方同意把事实、代价、反证与停止条件明确写在决定之前。",), 12)
+    consensus = _bounded_items(
+        ("各方同意把事实、代价、反证与停止条件明确写在决定之前。",)
+        if usable_advisor_views
+        else ("本轮没有可用的顾问观点，尚未形成共识；请配置或恢复可用的模型 provider 后重新讨论。",),
+        12,
+    )
     dissents = _bounded_items((f"仍需继续讨论：{topic}" for topic in agenda.topics[:2]), 12)
     questions = {
         1: ("上述观点里，哪一个最贴近你的真实处境，哪一个忽略了关键事实？",),
@@ -1175,8 +1197,15 @@ def _fallback_round_summary(
 def _parse_summary_positions(
     section: str,
     fallback_positions: tuple[CouncilPosition, ...],
+    entries: Iterable[object] = (),
 ) -> tuple[CouncilPosition, ...]:
-    by_id = {position.speaker_id: position for position in fallback_positions}
+    by_speaker_id = {position.speaker_id: position for position in fallback_positions}
+    by_entry_id: dict[str, dict] = {}
+    for raw in entries:
+        entry = _mapping(raw)
+        entry_id = str(entry.get("entry_id") or "").strip()
+        if entry_id:
+            by_entry_id[entry_id] = entry
     parsed: dict[str, CouncilPosition] = {}
     for raw in section.splitlines():
         line = raw.strip().lstrip("-*•　 ").strip()
@@ -1186,11 +1215,15 @@ def _parse_summary_positions(
         if len(parts) != 4:
             continue
         speaker_id, stance, responds_to_id, claim = parts
-        base = by_id.get(speaker_id)
+        base = by_speaker_id.get(speaker_id)
         if base is None or base.role != "advisor" or speaker_id in parsed:
             continue
         clean_stance = stance if stance in _TURN_STANCES else base.stance
-        target = by_id.get(responds_to_id)
+        clean_responds_to_id = (
+            "" if responds_to_id.casefold() in {"", "-", "none", "null", "无", "（无）"}
+            else responds_to_id
+        )
+        target = by_entry_id.get(clean_responds_to_id)
         clean_claim = _bounded_text(claim, MAX_POSITION_CLAIM_CHARS)
         if not clean_claim:
             continue
@@ -1199,8 +1232,8 @@ def _parse_summary_positions(
             speaker_name=base.speaker_name,
             claim=clean_claim,
             stance=clean_stance,
-            responds_to_name=target.speaker_name if target else base.responds_to_name,
-            responds_to_id=responds_to_id if target else base.responds_to_id,
+            responds_to_name=str(target.get("speaker_name") or "") if target else base.responds_to_name,
+            responds_to_id=clean_responds_to_id if target else base.responds_to_id,
             role="advisor",
         )
     return tuple(parsed.get(position.speaker_id, position) for position in fallback_positions)
@@ -1220,16 +1253,20 @@ def build_round_summary(
     fallback = _fallback_round_summary(agenda.round, agenda, turn_list, transcript)
     if not provider.configured:
         return fallback
-    current_text = _format_transcript([turn.to_dict() for turn in turn_list])
+    turn_entries = [turn.to_dict() for turn in turn_list]
+    all_entries = transcript + turn_entries
+    current_text = _format_transcript(turn_entries, include_ids=True)
     prompt = "\n\n".join(
         (
             f"用户要决策的事：{question}",
             _untrusted_context("背景、约束与知识", grounding),
-            _untrusted_context("截至本轮的完整讨论", _format_transcript(transcript + [turn.to_dict() for turn in turn_list])),
+            _untrusted_context("截至本轮的完整讨论", _format_transcript(all_entries, include_ids=True)),
             _untrusted_context("本轮新增发言", current_text),
             f"请为第 {agenda.round} 轮「{agenda.title}」写一份短纪要。不要替用户拍板。"
             "必须严格使用下面六个标题；共识和非共识都要点明具体议题，不得写空泛套话。"
             "在『各方观点』下，每位顾问一行，严格写 speaker_id | stance | responds_to_id | 核心主张；"
+            "speaker_id 是发言者身份 ID；responds_to_id 必须是被回应那条发言的 entry_id，"
+            "不是 speaker_id 或姓名，没有回应对象时留空。"
             "只能使用讨论中真实出现的 ID，stance 只能是 propose/support/challenge/refine/abstain。"
             "其余标题每条一行。\n"
             + "\n".join(f"## {title}" for title in _ROUND_SUMMARY_TITLES),
@@ -1244,7 +1281,7 @@ def build_round_summary(
         return fallback
     sections = _split_by_titles(answer.content, _ROUND_SUMMARY_TITLES)
     parsed = {title: _section_to_bullets(sections[title]) for title in _ROUND_SUMMARY_TITLES if title != "各方观点"}
-    positions = _parse_summary_positions(sections["各方观点"], fallback.positions)
+    positions = _parse_summary_positions(sections["各方观点"], fallback.positions, all_entries)
     return RoundSummary(
         round=fallback.round,
         phase=fallback.phase,

@@ -5,7 +5,7 @@ import json
 from cabinet import council, context
 from cabinet.advisors import load_advisor
 from cabinet.providers import ProviderAnswer
-from cabinet.schema import FactSheet
+from cabinet.schema import DialogueEntry, FactSheet
 from conftest import FACTSHEET_TEXT, SYNTHESIS_TEXT, FakeProvider
 
 
@@ -275,6 +275,56 @@ def test_active_user_is_first_reply_target_and_enters_minutes() -> None:
     assert "十万元" in founder.claim
 
 
+def test_same_founder_content_in_later_round_creates_a_new_entry() -> None:
+    previous = [
+        {
+            "round": 2,
+            "role": "founder",
+            "speaker_id": "founder",
+            "speaker_name": "我",
+            "entry_id": "founder-r2",
+            "content": "我同意。",
+            "participation_mode": "answer",
+        }
+    ]
+
+    normalized = council.with_user_participation(
+        previous,
+        {"mode": "answer", "content": "我同意。"},
+        3,
+    )
+
+    assert len(normalized) == 2
+    assert normalized[0]["round"] == 2
+    assert normalized[0]["entry_id"] == "founder-r2"
+    assert normalized[1]["round"] == 3
+    assert normalized[1]["entry_id"] != "founder-r2"
+
+
+def test_same_round_founder_content_reuses_the_visible_browser_entry() -> None:
+    transcript = [
+        {
+            "round": 3,
+            "role": "founder",
+            "speaker_id": "founder",
+            "speaker_name": "我",
+            "entry_id": "visible-founder-r3",
+            "content": "把现金流风险说清楚。",
+            "participation_mode": "focus",
+        }
+    ]
+
+    normalized = council.with_user_participation(
+        transcript,
+        {"mode": "focus", "content": "把现金流风险说清楚。"},
+        3,
+    )
+
+    assert len(normalized) == 1
+    assert normalized[0]["entry_id"] == "visible-founder-r3"
+    assert normalized[0]["participation_mode"] == "focus"
+
+
 def test_listen_round_does_not_repeat_an_old_founder_position_in_minutes() -> None:
     previous = [
         {
@@ -298,6 +348,121 @@ def test_listen_round_does_not_repeat_an_old_founder_position_in_minutes() -> No
     )
 
     assert all(position.speaker_id != "founder" for position in summary.positions)
+
+
+def test_round_summary_prompt_and_parser_use_entry_ids_for_reply_targets() -> None:
+    transcript = [
+        {
+            "round": 2,
+            "role": "founder",
+            "speaker_id": "founder",
+            "speaker_name": "我",
+            "entry_id": "founder-r2",
+            "reply_to_id": "",
+            "content": "我最多承担十万元损失。",
+            "participation_mode": "answer",
+        }
+    ]
+    turns = (
+        DialogueEntry(
+            round=2,
+            role="advisor",
+            speaker_id="analyst",
+            speaker_name="首席分析师",
+            lineage="实事求是",
+            content="十万元边界意味着必须先做小规模验证。",
+            citations=(),
+            provider="fake",
+            model="fake-model",
+            created_at_utc="2026-01-01T00:00:00+00:00",
+            entry_id="analyst-r2",
+            reply_to_id="founder-r2",
+            reply_to_name="我",
+            stance="refine",
+        ),
+        DialogueEntry(
+            round=2,
+            role="advisor",
+            speaker_id="munger",
+            speaker_name="查理·芒格",
+            lineage="多元思维模型",
+            content="我支持小规模验证，但还要先写下永久损失的退出条件。",
+            citations=(),
+            provider="fake",
+            model="fake-model",
+            created_at_utc="2026-01-01T00:00:01+00:00",
+            entry_id="munger-r2",
+            reply_to_id="analyst-r2",
+            reply_to_name="首席分析师",
+            stance="support",
+        ),
+    )
+    response = """## 本轮小结论
+- 先限定损失再试验
+## 各方观点
+- analyst | refine | founder-r2 | 用十万元损失上限反推可承受的试验规模
+- munger | support | analyst-r2 | 支持小试验，并补充永久损失的退出条件
+## 共识结论
+- 先做可逆验证
+## 非共识结论
+- 试验规模仍需讨论
+## 向决策者提问
+- 十万元是单次还是累计上限？
+## 下一轮焦点
+- 压力测试退出条件
+"""
+    provider = _StructuredProvider([response])
+
+    summary = council.build_round_summary(
+        provider,
+        "是否扩张？",
+        "背景",
+        transcript,
+        turns,
+        council.build_round_agenda(2),
+    )
+
+    prompt = provider.calls[0][-1]["content"]
+    assert "entry_id=founder-r2；speaker_id=founder；reply_to_id=（无）" in prompt
+    assert "entry_id=analyst-r2；speaker_id=analyst；reply_to_id=founder-r2" in prompt
+    analyst = next(position for position in summary.positions if position.speaker_id == "analyst")
+    munger = next(position for position in summary.positions if position.speaker_id == "munger")
+    assert analyst.responds_to_id == "founder-r2"
+    assert analyst.responds_to_name == "我"
+    assert munger.responds_to_id == "analyst-r2"
+    assert munger.responds_to_name == "首席分析师"
+    assert "永久损失" in munger.claim
+
+
+def test_fallback_round_without_usable_advisor_views_does_not_invent_consensus() -> None:
+    provider = FakeProvider(configured=False)
+    advisor = load_advisor("analyst")
+    transcript = [
+        {
+            "round": 1,
+            "role": "founder",
+            "speaker_id": "founder",
+            "speaker_name": "我",
+            "entry_id": "founder-r1",
+            "content": "我倾向扩张，但要先听顾问反驳。",
+            "participation_mode": "propose",
+        }
+    ]
+    turns = council.run_round(provider, "是否扩张？", (advisor,), "", transcript, 1, "brief")
+
+    summary = council.build_round_summary(
+        provider,
+        "是否扩张？",
+        "",
+        transcript,
+        turns,
+        council.build_round_agenda(1),
+    )
+
+    assert any(position.speaker_id == "founder" for position in summary.positions)
+    assert any("尚未形成共识" in item for item in summary.consensus)
+    assert any("模型 provider" in item for item in summary.consensus)
+    assert all("各方同意" not in item for item in summary.consensus)
 
 
 def test_listen_mode_keeps_advisor_to_advisor_debate() -> None:
