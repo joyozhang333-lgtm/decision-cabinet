@@ -464,12 +464,20 @@ export default function CouncilView({ provider }: { provider: string }) {
 
   return (
     <div>
-      <p className="lead">
-        从一个真实问题出发：<span className="em">先看事实，再展开选择与代价，最后观察局势如何演化</span>。
-        内阁与你一轮轮讨论，但决定始终属于你。
-      </p>
+      <h1 className="sr-only">决策内阁私董会</h1>
+      {!started ? (
+        <p className="lead">
+          从一个真实问题出发：<span className="em">先看事实，再展开选择与代价，最后观察局势如何演化</span>。
+          内阁与你一轮轮讨论，但决定始终属于你。
+        </p>
+      ) : (
+        <section className="session-topic" aria-label="本次私董会议题">
+          <div><span>本次议题</span><strong>{question}</strong></div>
+          <small>{selected.size} 位委员 · {DEPTHS.find(([key]) => key === depth)?.[1] || "标准"}讨论</small>
+        </section>
+      )}
 
-      <div className="card ask">
+      {!started && <div className="card ask">
         <label className="sr-only" htmlFor="decision-question">你要讨论的决策</label>
         <textarea
           id="decision-question"
@@ -510,7 +518,7 @@ export default function CouncilView({ provider }: { provider: string }) {
             <span>{isDemoMode ? "本轮使用当前标签页的临时决策档案（不会上传，关闭标签页后清除）" : "本轮向所选模型发送「决策档案」和最近已决/复盘记录（默认关闭）"}</span>
           </label>
         )}
-      </div>
+      </div>}
 
       {!started && clarifyQs && clarifyQs.length > 0 && (
         <div className="card clarify">

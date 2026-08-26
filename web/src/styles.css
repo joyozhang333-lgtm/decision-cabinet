@@ -67,6 +67,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 .lead { color: var(--ink-soft); margin: 0 0 18px; }
 .lead .em { color: var(--accent); }
+.session-topic { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 0 0 16px; padding: 2px 2px 12px; border-bottom: 1px solid var(--line); }
+.session-topic > div { min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.session-topic span { flex: 0 0 auto; color: var(--accent); font-size: 11px; letter-spacing: 1px; }
+.session-topic strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "Songti SC", "Noto Serif SC", serif; font-size: 17px; font-weight: 600; }
+.session-topic small { flex: 0 0 auto; color: var(--ink-faint); }
 
 .card {
   background: var(--surface); border: 1px solid var(--line);
@@ -403,6 +408,9 @@ button.ghost.sm { padding: 5px 12px; font-size: 12px; }
 }
 @media (max-width: 620px) {
   .container { padding: 18px 14px 70px; }
+  .session-topic { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .session-topic > div { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .session-topic strong { overflow: visible; white-space: normal; }
   .round-stepper { grid-template-columns: 1fr 1fr; }
   .round-stepper li { min-width: 0; border-bottom: 1px solid var(--line); }
   .round-stepper li:nth-child(2), .round-stepper li:nth-child(4) { border-right: none; }
