@@ -275,7 +275,7 @@ function buildTurn(
   const replyExcerpt = target ? short(String(target.content || "")) : "";
   const stanceCycles = round === 2 ? ["challenge", "refine", "support"] : ["refine", "challenge", "support"];
   const stance = replyName ? stanceCycles[index % stanceCycles.length] as DialogueEntry["stance"] : "propose";
-  const content = advisorMessage(id, question, round, participation, replyName, stance, includeMemory, replyExcerpt, replyRole);
+  const content = advisorMessage(id, question, round, participation, replyName, stance, includeMemory, replyRole);
   const delta = advisorDelta(id, round);
   const firstCanon = advisor.canon[0];
   return {
@@ -308,14 +308,13 @@ function advisorMessage(
   replyName = "",
   stance: DialogueEntry["stance"] = "propose",
   includeMemory = false,
-  replyExcerpt = "",
   replyRole = "",
 ): string {
   const stanceVerb = stance === "challenge" ? "要质疑" : stance === "support" ? "支持并推进" : "想补充修正";
   const relation = replyRole === "founder"
-    ? `你刚才说“${replyExcerpt}”。我先直接回应你的观点：`
+    ? "我先直接回应你的观点："
     : replyName
-      ? `${replyName}刚才说“${replyExcerpt}”。我${stanceVerb}这条判断：`
+      ? `我${stanceVerb}${replyName}的判断：`
     : "我先把自己的判断摆出来。";
   const memory = includeMemory ? memoryContext() : "";
   const memorySuffix = memory ? ` 同时要守住你本地档案里的边界：${memory}。` : "";
