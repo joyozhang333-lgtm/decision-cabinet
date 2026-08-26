@@ -1,0 +1,18 @@
+{
+  "mcp": {
+    "servers": {
+      "decision-cabinet": {
+        "command": "decision-cabinet-mcp",
+        "args": [],
+        "enabled": true,
+        "requestTimeoutMs": 60000,
+        "connectionTimeoutMs": 10000,
+        "toolFilter": {
+          "include": [
+            "decision_cabinet_*"
+          ]
+        }
+      }
+    }
+  }
+}

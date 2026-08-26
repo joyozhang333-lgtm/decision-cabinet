@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-7c5c3e.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-5a6b54.svg)](pyproject.toml)
 
-一个开源 AI 决策支持系统，也是一间可以持续对话的私人董事会。
+一个开源 AI 决策支持系统，也是一间会彼此回应、允许你参与的四轮私人董事会。
 
 它不替你预测命运或承诺收益，而是帮你从一个局部问题出发，逐步看清：
 
@@ -20,15 +20,15 @@
 
 > 核心原则：如实照见，实事求是。先看事实，再看选择与代价，最后看局势如何变化。
 
-[在线 Demo](https://joyozhang333-lgtm.github.io/decision-cabinet/demo/) · [中文产品介绍](https://joyozhang333-lgtm.github.io/decision-cabinet/) · [English Overview](https://joyozhang333-lgtm.github.io/decision-cabinet/en/) · [快速开始](#快速开始) · [知识库治理](docs/KNOWLEDGE-GOVERNANCE.md) · [参与贡献](CONTRIBUTING.md)
+[在线 Demo](https://joyozhang333-lgtm.github.io/decision-cabinet/demo/) · [中文产品介绍](https://joyozhang333-lgtm.github.io/decision-cabinet/) · [English Overview](https://joyozhang333-lgtm.github.io/decision-cabinet/en/) · [快速开始](#快速开始) · [智能体接入](docs/INTEGRATIONS.md) · [知识库治理](docs/KNOWLEDGE-GOVERNANCE.md) · [参与贡献](CONTRIBUTING.md)
 
 ![Decision Cabinet social preview](docs/social-preview.png)
 
 ## 立即体验
 
-打开 [GitHub Pages 在线 Demo](https://joyozhang333-lgtm.github.io/decision-cabinet/demo/)，无需注册、无需 API Key。Demo 在浏览器内运行，内置 28 位方法视角顾问和 23 张可追溯知识卡；你可以完成厘清问题、决策地图、多轮圆桌、插话、收束、记录决策与复盘。
+打开 [GitHub Pages 在线 Demo](https://joyozhang333-lgtm.github.io/decision-cabinet/demo/)，无需注册、无需 API Key。Demo 在浏览器内运行，内置 28 位方法视角顾问和 23 张可追溯知识卡；你可以完成厘清问题、决策地图、固定四轮私董会、用户参与、收束、记录决策与复盘。每轮都会显示议题、顾问回应对象、立场、各方观点、小结论、共识和非共识。
 
-Demo 使用内置演示回应，不调用外部大模型。决策档案和日志只保存在当前浏览器的 localStorage。要接入 DeepSeek、Claude 或 OpenAI-compatible 模型，请按下方步骤运行完整开源版。
+Demo 使用内置演示回应，不调用外部大模型。决策档案和日志只保存在当前标签页的 `sessionStorage`，关闭标签页即清除，界面也提供一键清除。要接入 DeepSeek、Claude 或 OpenAI-compatible 模型，请按下方步骤运行完整开源版。
 
 ## 它适合什么决策
 
@@ -64,7 +64,9 @@ Demo 使用内置演示回应，不调用外部大模型。决策档案和日志
   ↓
 相关知识检索：方法 + 边界 + 来源
   ↓
-多轮私董会：允许用户插话、追问、挑战和修正
+四轮私董会：事实定界 → 聚焦争议 → 压力测试 → 条件式收束
+  ↓
+用户参与：回答问题 / 补充事实 / 指定争议 / 旁听内部讨论
   ↓
 主持人收束：保留异见，把决定权交回用户
   ↓
@@ -93,6 +95,19 @@ Demo 使用内置演示回应，不调用外部大模型。决策档案和日志
 - 现代人物观点优先表述为方法摘要，不伪造逐字原话；
 - 有价值的分歧必须保留，不能强行形成共识；
 - 最终决定权始终属于用户。
+
+### 真正的四轮议事
+
+每一轮都按 `agenda → advisor reply chain → round_summary` 推进。顾问不是各说一遍答案：从第二位发言者开始，要点名支持、质疑或修正另一位顾问；从第二轮开始，还必须回应此前分歧并贡献新论点、反证、条件或证据要求。
+
+| 轮次 | 核心任务 | 必须看见的结果 |
+| --- | --- | --- |
+| 第一轮 · 事实定界 | 分开事实、推断和未知，提出可被质疑的初步立场 | 各方观点、小结论、共识、非共识 |
+| 第二轮 · 聚焦争议 | 把非共识变成具体议题，让支持与反对直接交锋 | 讨论议题、各方明确立场、共识、非共识 |
+| 第三轮 · 压力测试 | 检验代价、反证、二阶效应和局势演化 | 被挑战的假设、转向信号、仍缺的证据 |
+| 第四轮 · 条件式收束 | 说明什么条件下选什么，并保留少数意见 | 条件性结论、行动、停止条件、保留异议 |
+
+系统会检测同一顾问与历史发言的高度重复。首次重复会带着明确的新颖性要求重试；仍重复时，该顾问本轮弃权，而不是换词复述。用户在每轮之间可以选择 `answer`、`add`、`focus` 或 `listen`，沉默不会被当作同意。
 
 ## 快速开始
 
@@ -130,6 +145,33 @@ python scripts/run_council.py "公司是否应该现在进入一个新市场？"
 python scripts/run_chat.py
 ```
 
+## 接入 Codex、Claude Code 与其他智能体
+
+v0.4.0 提供默认只读、无状态的 MCP server，让外部智能体复用知识检索、离线决策地图、顾问目录和四轮议事协议：
+
+```bash
+python3 -m pip install 'decision-cabinet[mcp] @ git+https://github.com/joyozhang333-lgtm/decision-cabinet.git@v0.4.0'
+decision-cabinet-mcp
+```
+
+默认命令启动 stdio server。如果需要本机 Streamable HTTP，可以只监听 loopback：
+
+```bash
+decision-cabinet-mcp --transport streamable-http --host 127.0.0.1 --port 8765 --path /mcp
+```
+
+如果已经 clone 仓库，则在仓库根目录使用 `python3 -m pip install -e '.[mcp]'`。内置 HTTP 服务没有公网鉴权，会拒绝非 loopback 绑定。
+
+仓库提供 Codex plugin、Claude Code plugin、DeepSeek Harness MCP Client 预设、Hugging Face Tiny Agents 预设，以及 ML Claw 所使用的 OpenClaw MCP registry 配置片段。腾讯 WorkBuddy 需要使用者把上述 loopback HTTP 服务部署在可达主机上，并在前面配置自己管理的 HTTPS 与鉴权反向代理，再注册为自定义 Connector。注意：添加 plugin marketplace 不会替你安装 Python runtime 和 MCP SDK。
+
+- Codex：完成上面的 runtime 安装后，运行 `codex plugin marketplace add joyozhang333-lgtm/decision-cabinet --ref v0.4.0` 与 `codex plugin add decision-cabinet@decision-cabinet`；
+- Claude Code：`claude mcp add decision-cabinet -- decision-cabinet-mcp`；
+- DeepSeek Harness：仍属 developer preview，本仓库提供预设，但本版本未做本机 `dsh` 端到端验证；
+- Hugging Face：Tiny Agents 使用 `huggingface-agent.json`；若“小龙虾”指官方仓库 **ML Claw**，则通过其 OpenClaw runtime 的 MCP registry 接入，配置见 `mlclaw-openclaw.mcp.json`；
+- 腾讯 WorkBuddy：与 CodeBuddy 不同；GitHub Pages Demo 不是远程 MCP 后端；本版未在 WorkBuddy 企业环境做端到端验证。
+
+完整命令、官方来源、认证限制和验证状态见 [智能体接入指南](docs/INTEGRATIONS.md) / [Agent integrations](docs/INTEGRATIONS_EN.md)。
+
 ## 模型与隐私
 
 默认 provider 是 DeepSeek `deepseek-v4-pro`，也支持 Claude 和 OpenAI-compatible API：
@@ -164,7 +206,7 @@ CABINET_OPENAI_MODEL=
 | `POST /api/decision/map` | 生成选择、代价与局势演化地图 |
 | `GET /api/knowledge` | 浏览或搜索可追溯知识卡 |
 | `POST /api/council/clarify` | 生成议事前厘清问题 |
-| `POST /api/council/round` | 多轮圆桌，SSE 流式返回 |
+| `POST /api/council/round` | 单轮议事，SSE 返回 `agenda`、顾问 `turn`、`round_summary` 与 `done` |
 | `POST /api/council/close` | 主持人收束并创建决策草稿 |
 | `POST /api/advisors/{id}/chat` | 与单个顾问持续对话 |
 | `GET /api/decisions` | 决策日志与复盘 |
@@ -177,12 +219,13 @@ React / TypeScript
 FastAPI ── 决策地图 ── 本地知识检索（Markdown）
    │           │
    │           └── 选择 / 代价 / 二阶效应 / 演化路径
-   ├── 多轮圆桌编排 ── LLM Provider 抽象
+   ├── 四轮圆桌编排 ── 议程 / 回应链 / 结构化纪要
+   ├── 只读 MCP server ── Codex / Claude Code / 其他 MCP 宿主
    ├── 顾问与经典白名单（Markdown）
    └── SQLite：档案 / 会话 / 决策 / 复盘
 ```
 
-更多细节见 [架构说明](docs/ARCHITECTURE.md) 与 [产品定义](docs/PRODUCT.md)。
+更多细节见 [架构说明](docs/ARCHITECTURE.md)、[产品定义](docs/PRODUCT.md) 与 [智能体接入](docs/INTEGRATIONS.md)。
 
 ## 开发与验证
 

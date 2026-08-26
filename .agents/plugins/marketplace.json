@@ -1,0 +1,20 @@
+{
+  "name": "decision-cabinet",
+  "interface": {
+    "displayName": "Decision Cabinet"
+  },
+  "plugins": [
+    {
+      "name": "decision-cabinet",
+      "source": {
+        "source": "local",
+        "path": "./plugins/decision-cabinet"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

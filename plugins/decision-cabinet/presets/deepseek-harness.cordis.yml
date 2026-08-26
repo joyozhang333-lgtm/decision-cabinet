@@ -1,0 +1,20 @@
+# DeepSeek Harness is currently a developer-preview project. Merge this list
+# fragment into your own Cordis composition after installing Decision Cabinet.
+#
+# This preset registers only the Decision Cabinet MCP client. It does not add
+# Bash, file-editing, or a danger-full-access sandbox configuration. The dsh
+# runtime has not been exercised in this repository's local test environment.
+- id: mcp-decision-cabinet
+  name: "@deepseek-ai/dsh-mcp-client"
+  config:
+    serverName: decision-cabinet
+    transport: stdio
+    command: decision-cabinet-mcp
+    args: []
+    toolCallTimeoutMs: 60000
+    failOnStartupError: true
+    reconnect:
+      enabled: true
+      initialDelayMs: 500
+      maxDelayMs: 30000
+      maxAttempts: 5

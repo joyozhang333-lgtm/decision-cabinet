@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 — 2026-08-27
+
+- 私董会改为固定四轮议事：事实定界、聚焦争议、压力测试与条件式收束，不再把多位顾问的独立回答拼成讨论。
+- 每轮新增公开议程、顾问回应对象与立场、各方观点、小结论、共识、非共识、给用户的问题和下一轮焦点。
+- 用户可以在轮次之间回答委员会、补充事实、指定争议或选择旁听；没有新增信息时，下一轮仍从既有分歧继续推进。
+- 新增同一顾问历史发言的反重复检查：先带新颖性约束重试，仍重复则本轮明确弃权。
+- 重做私董会界面：四轮进度、按轮对话、回应链和议事纪要并列呈现；新增智能体接入中心。
+- 新增默认只读、无状态的 MCP server，以及 Codex、Claude Code、DeepSeek Harness、Hugging Face Tiny Agents 和 ML Claw/OpenClaw 的 plugin 或配置入口。
+- 明确接入成熟度与边界：DeepSeek Harness 仍属 developer preview；Tiny Agents 与 ML Claw/OpenClaw 分开接入；WorkBuddy 与 CodeBuddy 不同，且远程 Connector 仍需 HTTPS 与鉴权，GitHub Pages Demo 不是远程后端。
+- 在线 Demo 改为标签页级 `sessionStorage`，清理旧版 origin-wide Demo 键并提供一键清除，避免 GitHub Pages 同源项目读取长期留存的演示输入。
+- 更新中英文 README、产品页、产品定义、架构说明和接入指南，并保留原有隐私、金融风险与最终决定权声明。
+
 ## 0.3.0 — 2026-08-25
 
 - 新增无需密钥的浏览器在线 Demo，覆盖决策澄清、事实表、决策地图、多轮私董会、决策日志、知识库与组织记忆。

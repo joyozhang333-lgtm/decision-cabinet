@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Decision Cabinet</title>
+  <desc id="desc">A circular council table with four seats and a central decision point.</desc>
+  <rect width="256" height="256" rx="56" fill="#F5F0E7"/>
+  <circle cx="128" cy="128" r="67" fill="none" stroke="#2F2C27" stroke-width="10"/>
+  <circle cx="128" cy="128" r="16" fill="#9E3B34"/>
+  <circle cx="128" cy="39" r="18" fill="#7C5C3E"/>
+  <circle cx="217" cy="128" r="18" fill="#7C5C3E"/>
+  <circle cx="128" cy="217" r="18" fill="#7C5C3E"/>
+  <circle cx="39" cy="128" r="18" fill="#7C5C3E"/>
+  <path d="M128 61v43M195 128h-43M128 195v-43M61 128h43" stroke="#2F2C27" stroke-width="8" stroke-linecap="round"/>
+</svg>

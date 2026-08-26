@@ -5,9 +5,11 @@ provider 未配置或出错时走本地 fallback，保证离线/无 key 也能�
 """
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from difflib import SequenceMatcher
 from uuid import uuid4
 
 from . import context, personas
@@ -21,11 +23,14 @@ from .schema import (
     ChatMessage,
     ChatSession,
     ClarifyQuestion,
+    CouncilPosition,
     CouncilSession,
     Decision,
     DialogueEntry,
     FactSheet,
     OrgMemory,
+    RoundAgenda,
+    RoundSummary,
     SourceReference,
     Synthesis,
     utc_now_iso,
@@ -33,6 +38,33 @@ from .schema import (
 
 TurnCallback = Callable[[AdvisorTurn], None]
 StreamHandler = Callable[[str], None]
+
+MAX_ROUND_ADVISORS = 16
+MAX_TRANSCRIPT_CONTENT_CHARS = 4_000
+MAX_SUMMARY_ITEM_CHARS = 500
+MAX_POSITION_CLAIM_CHARS = 2_000
+MAX_CLOSE_CONTENT_CHARS = 12_000
+DEFAULT_ROUND_ADVISOR_IDS: tuple[str, ...] = (
+    "analyst",
+    "investment-analyst",
+    "munger",
+    "drucker",
+    "growth-strategist",
+    "jung",
+    "laozi",
+    "huineng",
+)
+
+_TURN_STANCES = {"propose", "support", "challenge", "refine", "abstain"}
+_DELTA_TYPES = {
+    "claim",
+    "new_evidence",
+    "counterexample",
+    "condition",
+    "position_change",
+    "evidence_request",
+    "none",
+}
 
 
 def _untrusted_context(label: str, text: str) -> str:
@@ -512,74 +544,731 @@ def build_grounding(
     return digest
 
 
+_ROUND_PHASES: dict[int, tuple[str, str, str]] = {
+    1: ("facts", "事实定界与初步立场", "把事实、推断与关键判断分开，形成第一批可推进的小结论。"),
+    2: ("debate", "聚焦争议与观点交锋", "围绕上一轮未达成共识的议题，让支持与反对意见直接回应。"),
+    3: ("stress_test", "代价、反证与局势演化", "用最坏情景、二阶效应和转向信号压力测试各方判断。"),
+    4: ("convergence", "条件式收束与少数意见", "说明什么条件下选什么，并保留少数意见、证据与停止条件。"),
+}
+
+
+def _mapping(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        result = to_dict()
+        return result if isinstance(result, dict) else {}
+    return {}
+
+
+def _strings(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(str(item).strip() for item in value if str(item).strip())
+
+
+def _short_text(text: str, limit: int = 120) -> str:
+    cleaned = " ".join((text or "").split())
+    return cleaned if len(cleaned) <= limit else cleaned[: limit - 1] + "…"
+
+
+def _bounded_text(text: str, limit: int) -> str:
+    """Preserve paragraph structure while keeping every emitted value reusable as API input."""
+    cleaned = (text or "").strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    if limit <= 1:
+        return cleaned[:limit]
+    return cleaned[: limit - 1].rstrip() + "…"
+
+
+def _bounded_items(items: Iterable[str], max_items: int) -> tuple[str, ...]:
+    bounded: list[str] = []
+    for item in items:
+        cleaned = _bounded_text(str(item), MAX_SUMMARY_ITEM_CHARS)
+        if cleaned:
+            bounded.append(cleaned)
+        if len(bounded) >= max_items:
+            break
+    return tuple(bounded)
+
+
+def with_user_participation(
+    transcript: list[dict],
+    participation: dict | None,
+    round_index: int,
+) -> list[dict]:
+    """Materialize an active user contribution once so replies and minutes can reference it.
+
+    Browser clients already append their visible founder bubble. MCP/API clients may only
+    send ``participation``. This normalization makes both paths equivalent and consumes
+    ``reply_to_id`` instead of silently discarding it.
+    """
+    working = [dict(entry) for entry in transcript]
+    payload = participation or {}
+    mode = str(payload.get("mode") or "listen")
+    content = _bounded_text(str(payload.get("content") or ""), MAX_TRANSCRIPT_CONTENT_CHARS)
+    if mode == "listen" or not content:
+        return working
+
+    reply_to_id = str(payload.get("reply_to_id") or "")
+    replied = next((entry for entry in working if str(entry.get("entry_id") or "") == reply_to_id), None)
+    relation = {
+        "reply_to_id": reply_to_id,
+        "reply_to_name": str((replied or {}).get("speaker_name") or payload.get("reply_to_name") or ""),
+        "reply_excerpt": _short_text(
+            str((replied or {}).get("content") or payload.get("reply_excerpt") or ""),
+            100,
+        ),
+    }
+    for index in range(len(working) - 1, -1, -1):
+        entry = working[index]
+        if entry.get("role") != "founder":
+            continue
+        if str(entry.get("content") or "").strip() != content:
+            continue
+        working[index] = {
+            **entry,
+            "speaker_id": "founder",
+            "speaker_name": "我",
+            "content": content,
+            "participation_mode": mode,
+            **relation,
+        }
+        return working
+
+    working.append(
+        {
+            # A contribution made between rounds opens the upcoming round.  Keeping
+            # it on that round makes API-only clients match the browser transcript
+            # and prevents old founder positions from leaking into later minutes.
+            "round": round_index,
+            "role": "founder",
+            "speaker_id": "founder",
+            "speaker_name": "我",
+            "content": content,
+            "entry_id": f"founder_{uuid4().hex}",
+            "stance": "propose",
+            "novelty": "new",
+            "participation_mode": mode,
+            **relation,
+        }
+    )
+    return working
+
+
+def build_round_agenda(
+    round_index: int,
+    prior_summaries: Iterable[object] = (),
+    participation: dict | None = None,
+) -> RoundAgenda:
+    """把四轮职责和上一轮异见变成本轮公开议程，而不是让模型自行猜。"""
+    if round_index not in _ROUND_PHASES:
+        raise ValueError("私董会固定为四轮，round_index 必须在 1 到 4 之间。")
+    phase, title, objective = _ROUND_PHASES[round_index]
+    summaries = [_mapping(item) for item in prior_summaries]
+    previous = summaries[-1] if summaries else {}
+    previous_dissents = _strings(previous.get("dissents"))
+    previous_consensus = _strings(previous.get("consensus"))
+    previous_focus = _strings(previous.get("next_round_focus"))
+
+    if round_index == 1:
+        topics = (
+            "各方分别判断：哪些是事实，哪些仍是推断",
+            "每位顾问给出自己的初步立场与最关键依据",
+            "形成小结论、初步共识和非共识",
+        )
+    elif round_index == 2:
+        disputed = previous_dissents[:2] or ("现在行动还是先验证", "收益机会与承载代价如何取舍")
+        topics = tuple(f"争议：{item}" for item in disputed) + ("明确每一方支持、反对或修正的理由",)
+    elif round_index == 3:
+        tested = (previous_consensus[:1] + previous_dissents[:2]) or ("核心判断尚未经过反证",)
+        topics = tuple(f"压力测试：{item}" for item in tested) + (
+            "最坏情景、二阶效应与不可逆代价",
+            "什么证据或信号会让各方改变立场",
+        )
+    else:
+        focus = previous_focus[:2] or previous_dissents[:2] or ("适用条件、停止条件与少数意见",)
+        topics = tuple(f"收束：{item}" for item in focus) + (
+            "给出条件式建议，不制造虚假一致",
+            "列出下一步证据、行动与停止条件",
+        )
+
+    p = participation or {}
+    mode = str(p.get("mode") or "listen")
+    content = _short_text(str(p.get("content") or ""), 180)
+    if mode == "focus" and content:
+        topics = (f"用户指定争议：{content}", *topics)
+    elif mode == "answer" and content:
+        topics = (f"核对用户刚回答的信息：{content}", *topics)
+    elif mode == "add" and content:
+        topics = (f"检验用户新增事实或观点：{content}", *topics)
+
+    return RoundAgenda(
+        round=round_index,
+        phase=phase,
+        title=title,
+        objective=objective,
+        topics=_bounded_items(topics, 5),
+    )
+
+
 def _format_transcript(transcript: list[dict]) -> str:
     rows: list[str] = []
     for e in transcript:
+        round_index = int(e.get("round") or 0)
         role = e.get("role", "advisor")
         name = e.get("speaker_name") or ("用户" if role == "founder" else "主持人")
         tag = {"founder": "【用户】", "facilitator": "【主持人】"}.get(role, "")
+        reply_to = str(e.get("reply_to_name") or "").strip()
+        stance = str(e.get("stance") or "").strip()
+        relation = f"（{stance}回应 {reply_to}）" if reply_to else ""
+        mode = str(e.get("participation_mode") or "").strip()
+        if role == "founder" and mode:
+            relation = f"（参与方式：{mode}）"
         content = (e.get("content") or "").strip()
         if content:
-            rows.append(f"{tag}{name}：{content}")
+            round_tag = f"【第 {round_index} 轮】" if round_index else ""
+            rows.append(f"{round_tag}{tag}{name}{relation}：{content}")
     return "\n\n".join(rows)
 
 
-def build_round_messages(advisor, question, grounding, transcript, round_index, depth):
+def _format_round_summaries(summaries: Iterable[object]) -> str:
+    rows: list[str] = []
+    for raw in summaries:
+        item = _mapping(raw)
+        if not item:
+            continue
+        rows.append(
+            "\n".join(
+                (
+                    f"第 {item.get('round', '?')} 轮｜{item.get('title', '')}",
+                    "共识：" + ("；".join(_strings(item.get("consensus"))) or "（暂无）"),
+                    "非共识：" + ("；".join(_strings(item.get("dissents"))) or "（暂无）"),
+                    "下一轮焦点：" + ("；".join(_strings(item.get("next_round_focus"))) or "（暂无）"),
+                )
+            )
+        )
+    return "\n\n".join(rows)
+
+
+def _reply_target(
+    advisor: Advisor,
+    working: list[dict],
+    *,
+    prioritize_founder: bool = False,
+) -> dict | None:
+    if prioritize_founder:
+        for entry in reversed(working):
+            if entry.get("role") != "founder":
+                continue
+            if str(entry.get("participation_mode") or "") == "listen":
+                continue
+            if str(entry.get("content") or "").strip():
+                return entry
+    for entry in reversed(working):
+        if entry.get("role", "advisor") != "advisor":
+            continue
+        if entry.get("speaker_id") == advisor.id:
+            continue
+        if str(entry.get("content") or "").strip():
+            return entry
+    return None
+
+
+def _stance_for(round_index: int, turn_index: int, has_target: bool) -> str:
+    if not has_target:
+        return "propose"
+    cycles = {
+        1: ("refine", "challenge", "support"),
+        2: ("challenge", "refine", "support"),
+        3: ("challenge", "support", "refine"),
+        4: ("refine", "support", "challenge"),
+    }
+    return cycles[round_index][turn_index % 3]
+
+
+def build_round_messages(
+    advisor,
+    question,
+    grounding,
+    transcript,
+    round_index,
+    depth,
+    *,
+    agenda: RoundAgenda | None = None,
+    prior_summaries: Iterable[object] = (),
+    reply_target: dict | None = None,
+    stance: str = "propose",
+    participation_mode: str = "listen",
+):
     system = personas.build_advisor_system_prompt(advisor, "")
+    agenda = agenda or build_round_agenda(round_index, prior_summaries)
     parts = [f"用户要决策的事：{question}", _untrusted_context("档案、知识与决策地图", grounding)]
+    summaries_text = _format_round_summaries(prior_summaries)
+    if summaries_text:
+        parts.append(_untrusted_context("此前各轮的结构化纪要", summaries_text))
     if transcript:
         parts.append(_untrusted_context("此前圆桌发言与模型输出", _format_transcript(transcript)))
-    if round_index <= 1:
+    parts.append(f"这是第 {round_index} 轮「{agenda.title}」。本轮目标：{agenda.objective}")
+    parts.append(
+        _untrusted_context(
+            "本轮公开议题，只作为讨论对象",
+            "\n".join(f"- {topic}" for topic in agenda.topics),
+        )
+    )
+    if reply_target:
+        target_name = str(reply_target.get("speaker_name") or "另一位顾问")
+        target_content = _short_text(str(reply_target.get("content") or ""), 180)
+        stance_cn = {"support": "支持并推进", "challenge": "质疑或反驳", "refine": "补充并修正"}.get(stance, "回应")
         parts.append(
-            "这是第 1 轮。就你最在意的那一点，跟他说说你怎么看——大白话、短句、像当面聊天，别铺开讲全部。"
-            "大约 120-180 字。末了可以反问他一句，或抛个别人会想接的话头。"
+            _untrusted_context(
+                "本轮需要回应的目标发言",
+                f"发言者：{target_name}\n内容：{target_content}",
+            )
+        )
+        parts.append(
+            f"你本轮必须先点名回应上面的目标发言。你的回应职责是「{stance_cn}」。"
+            "不要假装中立，也不要把对方的话换一种说法。"
         )
     else:
-        parts.append(
-            f"这是第 {round_index} 轮，比上一轮再往里走一层。直接接着上面的话说——"
-            "你同意谁、不同意谁，或者回应用户插的话，点名说（比如「我不同意芒格刚才那句」），别重复任何人说过的。"
-            "还是大白话、短句，约 120-180 字。"
-        )
-    parts.append("像真人在圆桌上当面开口，别端着、别写小标题和列表、别用套路化的开头。")
+        parts.append("你负责开题：给出一个清楚的判断和依据，留出可供其他委员支持或反驳的抓手。")
+    if participation_mode == "listen" and round_index > 1:
+        parts.append("用户这一轮选择旁听，没有提供新信息。你仍必须围绕上一轮未解决的分歧推进论证，不能因此复述旧观点。")
+    parts.append(
+        "本轮必须贡献至少一个此前没有出现的新论点、新反证、新条件、证据要求或立场修正。"
+        "如果确实没有新增内容，就明确说暂不新增立场，不要换词重复。"
+        "像真人当面开口，发言控制在 120-180 字。"
+        "只输出一个 JSON 对象，不要 Markdown："
+        '{"speech":"自然发言正文","stance":"propose|support|challenge|refine|abstain",'
+        '"delta_type":"new_evidence|counterexample|condition|position_change|evidence_request|none",'
+        '"delta":"本轮相对既有讨论新增了什么；若无新增则写空字符串"}。'
+    )
     return [{"role": "system", "content": system}, {"role": "user", "content": "\n\n".join(parts)}]
+
+
+def _normalized_for_similarity(text: str) -> str:
+    return "".join(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]+", (text or "").lower()))
+
+
+def _is_repetitive(content: str, advisor_id: str, transcript: list[dict], threshold: float = 0.82) -> bool:
+    current = _normalized_for_similarity(content)
+    if len(current) < 24:
+        return False
+    for entry in transcript:
+        if entry.get("role", "advisor") != "advisor" or entry.get("speaker_id") != advisor_id:
+            continue
+        previous = _normalized_for_similarity(str(entry.get("content") or ""))
+        if previous and SequenceMatcher(None, previous, current).ratio() >= threshold:
+            return True
+    return False
+
+
+def _copies_current_round(content: str, round_index: int, transcript: list[dict], threshold: float = 0.82) -> bool:
+    current = _normalized_for_similarity(content)
+    if len(current) < 24:
+        return False
+    for entry in transcript:
+        if entry.get("role", "advisor") != "advisor" or int(entry.get("round") or 0) != round_index:
+            continue
+        previous = _normalized_for_similarity(str(entry.get("content") or ""))
+        if previous and SequenceMatcher(None, previous, current).ratio() >= threshold:
+            return True
+    return False
+
+
+def _parse_turn_answer(raw: str) -> tuple[str, str, str, str, bool]:
+    """Parse the model's natural speech plus an explicit novelty contract."""
+    text = (raw or "").strip()
+    candidate = text
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.IGNORECASE)
+        candidate = re.sub(r"\s*```$", "", candidate)
+    start, end = candidate.find("{"), candidate.rfind("}")
+    if start >= 0 and end > start:
+        candidate = candidate[start : end + 1]
+    try:
+        payload = json.loads(candidate)
+    except (json.JSONDecodeError, TypeError):
+        return text, "propose", "claim", _position_claim(text), False
+    if not isinstance(payload, dict):
+        return text, "propose", "claim", _position_claim(text), False
+    speech = str(payload.get("speech") or "").strip()
+    stance = str(payload.get("stance") or "propose").strip().lower()
+    delta_type = str(payload.get("delta_type") or "none").strip().lower()
+    delta = str(payload.get("delta") or "").strip()
+    return (
+        speech,
+        stance if stance in _TURN_STANCES else "propose",
+        delta_type if delta_type in _DELTA_TYPES else "none",
+        delta,
+        True,
+    )
+
+
+def _has_prior_advisor_turn(advisor_id: str, transcript: list[dict]) -> bool:
+    return any(
+        entry.get("role", "advisor") == "advisor" and entry.get("speaker_id") == advisor_id
+        for entry in transcript
+    )
+
+
+def _delta_is_repetitive(delta: str, advisor_id: str, transcript: list[dict], threshold: float = 0.72) -> bool:
+    current = _normalized_for_similarity(delta)
+    if len(current) < 8:
+        return False
+    for entry in transcript:
+        if entry.get("role", "advisor") != "advisor" or entry.get("speaker_id") != advisor_id:
+            continue
+        previous_source = str(entry.get("delta") or entry.get("content") or "")
+        previous = _normalized_for_similarity(previous_source)
+        if previous and SequenceMatcher(None, previous, current).ratio() >= threshold:
+            return True
+    return False
+
+
+def _turn_retry_reasons(
+    *,
+    speech: str,
+    delta_type: str,
+    delta: str,
+    structured: bool,
+    advisor_id: str,
+    transcript: list[dict],
+    round_index: int,
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    if not speech.strip():
+        reasons.append("empty")
+    if len(speech) > MAX_TRANSCRIPT_CONTENT_CHARS:
+        reasons.append("too_long")
+    if _is_repetitive(speech, advisor_id, transcript) or _copies_current_round(speech, round_index, transcript):
+        reasons.append("repetitive")
+    if round_index > 1 and _has_prior_advisor_turn(advisor_id, transcript):
+        if not structured:
+            reasons.append("missing_delta_contract")
+        elif delta_type == "none":
+            # An explicit abstention is valid; pretending to add novelty is not.
+            pass
+        elif len(_normalized_for_similarity(delta)) < 8:
+            reasons.append("missing_delta")
+        elif _delta_is_repetitive(delta, advisor_id, transcript):
+            reasons.append("repetitive_delta")
+    return tuple(dict.fromkeys(reasons))
 
 
 def run_round(
     provider, question, advisors, grounding, transcript, round_index,
-    depth="standard", on_turn=None, should_stop=None,
+    depth="standard", on_turn=None, should_stop=None, *, agenda=None,
+    prior_summaries=(), participation=None,
 ):
     """一轮发言：顾问按顺序说，每个人都看到本轮前面同伴刚说的话 → 有来有回。"""
+    if round_index not in _ROUND_PHASES:
+        raise ValueError("私董会固定为四轮，round_index 必须在 1 到 4 之间。")
+    agenda = agenda or build_round_agenda(round_index, prior_summaries, participation)
+    participation_mode = str((participation or {}).get("mode") or "listen")
     new_turns: list[DialogueEntry] = []
-    working = list(transcript)
-    for advisor in advisors:
+    working = with_user_participation(list(transcript), participation, round_index)
+    ordered = list(advisors)
+    if len(ordered) > MAX_ROUND_ADVISORS:
+        raise ValueError(f"每轮最多允许 {MAX_ROUND_ADVISORS} 位顾问。")
+    if ordered:
+        shift = (round_index - 1) % len(ordered)
+        ordered = ordered[shift:] + ordered[:shift]
+    for turn_index, advisor in enumerate(ordered):
         if should_stop is not None and should_stop():
             break
+        target = _reply_target(
+            advisor,
+            working,
+            prioritize_founder=turn_index == 0 and participation_mode != "listen",
+        )
+        stance = _stance_for(round_index, turn_index, target is not None)
+        novelty = "refined" if target is not None else "new"
+        delta_type = "claim" if round_index == 1 else "none"
+        delta = ""
         if not provider.configured:
             content, prov, model = (
                 f"（{advisor.name}·本地占位）当前未配置大模型，无法生成真实发言。", "local-fallback", None,
             )
+            delta_type, novelty = "none", "low"
         else:
             try:
+                messages = build_round_messages(
+                    advisor, question, grounding, working, round_index, depth,
+                    agenda=agenda, prior_summaries=prior_summaries, reply_target=target,
+                    stance=stance, participation_mode=participation_mode,
+                )
                 ans = provider.complete(
-                    build_round_messages(advisor, question, grounding, working, round_index, depth),
+                    messages,
                     max_tokens=context.advisor_max_tokens(depth),
                 )
-                content, prov, model = ans.content.strip(), ans.provider, ans.model
+                speech, parsed_stance, parsed_delta_type, parsed_delta, structured = _parse_turn_answer(ans.content)
+                reasons = _turn_retry_reasons(
+                    speech=speech,
+                    delta_type=parsed_delta_type,
+                    delta=parsed_delta,
+                    structured=structured,
+                    advisor_id=advisor.id,
+                    transcript=working,
+                    round_index=round_index,
+                )
+                content, prov, model = speech, ans.provider, ans.model
+                if structured:
+                    stance = parsed_stance if target is not None or round_index > 1 else "propose"
+                    delta_type, delta = parsed_delta_type, parsed_delta
+                    if delta_type == "none":
+                        stance, novelty = "abstain", "low"
+                else:
+                    delta_type, delta = "claim", _position_claim(speech)
+                if reasons:
+                    if should_stop is not None and should_stop():
+                        break
+                    retry_messages = [dict(message) for message in messages]
+                    retry_messages[-1]["content"] += (
+                        "\n\n上一份输出未通过议事契约，原因：" + "、".join(reasons) + "。只允许再答一次："
+                        "必须使用要求的 JSON；明确相对既有讨论增加了什么反证、条件、证据或立场变化；"
+                        f"speech 不得超过 {MAX_TRANSCRIPT_CONTENT_CHARS} 字，禁止复述原结论。"
+                    )
+                    retried = provider.complete(
+                        retry_messages,
+                        max_tokens=context.advisor_max_tokens(depth),
+                    )
+                    candidate, candidate_stance, candidate_delta_type, candidate_delta, candidate_structured = _parse_turn_answer(
+                        retried.content
+                    )
+                    candidate_reasons = _turn_retry_reasons(
+                        speech=candidate,
+                        delta_type=candidate_delta_type,
+                        delta=candidate_delta,
+                        structured=candidate_structured,
+                        advisor_id=advisor.id,
+                        transcript=working,
+                        round_index=round_index,
+                    )
+                    hard_truncation_only = set(candidate_reasons).issubset({"too_long"})
+                    if candidate_reasons and not hard_truncation_only:
+                        topic = agenda.topics[0] if agenda.topics else "本轮议题"
+                        content = (
+                            f"我这一轮没有比上一轮更多的新证据或新条件，先保留原来的立场，"
+                            f"不换一种说法重复。等围绕“{topic}”出现新信息后我再回应。"
+                        )
+                        prov, model, stance, novelty = retried.provider, retried.model, "abstain", "low"
+                        delta_type, delta = "none", ""
+                    else:
+                        content, prov, model = candidate, retried.provider, retried.model
+                        stance = candidate_stance if target is not None or round_index > 1 else "propose"
+                        delta_type, delta = candidate_delta_type, candidate_delta
+                        novelty = "low" if delta_type == "none" else "refined"
+                        if delta_type == "none":
+                            stance = "abstain"
             except ProviderError:
                 content, prov, model = (f"（{advisor.name}·本地占位）外部模型暂时不可用。", "local-fallback", None)
+                novelty, delta_type, delta = "low", "none", ""
+        content = _bounded_text(content, MAX_TRANSCRIPT_CONTENT_CHARS)
+        delta = _bounded_text(delta, MAX_SUMMARY_ITEM_CHARS)
+        target_id = str((target or {}).get("entry_id") or "")
+        target_name = str((target or {}).get("speaker_name") or "")
+        target_excerpt = _short_text(str((target or {}).get("content") or ""), 100)
         entry = DialogueEntry(
             round=round_index, role="advisor", speaker_id=advisor.id, speaker_name=advisor.name,
             lineage=advisor.lineage, content=content, citations=collect_canon_citations(advisor, content),
-            provider=prov, model=model, created_at_utc=utc_now_iso(),
+            provider=prov, model=model, created_at_utc=utc_now_iso(), entry_id=f"turn_{uuid4().hex}",
+            reply_to_id=target_id, reply_to_name=target_name, reply_excerpt=target_excerpt,
+            stance=stance, novelty=novelty, delta_type=delta_type, delta=delta,
         )
         new_turns.append(entry)
-        working.append({"role": "advisor", "speaker_name": advisor.name, "content": content})
+        working.append(entry.to_dict())
         if on_turn is not None:
             on_turn(entry)
     return new_turns
 
 
-def build_close(provider, question, grounding, transcript, depth="standard", stream_handler=None):
+_ROUND_SUMMARY_TITLES: tuple[str, ...] = (
+    "本轮小结论",
+    "各方观点",
+    "共识结论",
+    "非共识结论",
+    "向决策者提问",
+    "下一轮焦点",
+)
+
+
+def _position_claim(content: str) -> str:
+    first = re.split(r"(?<=[。！？!?])", " ".join((content or "").split()), maxsplit=1)[0]
+    return _short_text(first or content, 180)
+
+
+def _fallback_round_summary(
+    round_index: int,
+    agenda: RoundAgenda,
+    turns: Iterable[DialogueEntry],
+    transcript: Iterable[dict] = (),
+) -> RoundSummary:
+    turn_list = list(turns)
+    advisor_positions = tuple(
+        CouncilPosition(
+            speaker_id=turn.speaker_id,
+            speaker_name=turn.speaker_name,
+            claim=_position_claim(turn.content),
+            stance=turn.stance,
+            responds_to_name=turn.reply_to_name,
+            responds_to_id=turn.reply_to_id,
+            role="advisor",
+        )
+        for turn in turn_list
+    )
+    founder_position: tuple[CouncilPosition, ...] = ()
+    for raw in reversed(list(transcript)):
+        if raw.get("role") != "founder" or str(raw.get("participation_mode") or "") == "listen":
+            continue
+        if int(raw.get("round") or 0) != round_index:
+            continue
+        content = str(raw.get("content") or "").strip()
+        if not content:
+            continue
+        founder_position = (
+            CouncilPosition(
+                speaker_id="founder",
+                speaker_name="我",
+                claim=_bounded_text(content, MAX_POSITION_CLAIM_CHARS),
+                stance=str(raw.get("participation_mode") or "propose"),
+                responds_to_name=str(raw.get("reply_to_name") or ""),
+                responds_to_id=str(raw.get("reply_to_id") or ""),
+                role="founder",
+            ),
+        )
+        break
+    positions = founder_position + advisor_positions
+    usable = [position.claim for position in positions if position.claim and "本地占位" not in position.claim]
+    provisional = _bounded_items(usable, 3) or ("本轮尚未形成可核验的小结论。",)
+    consensus = _bounded_items(("各方同意把事实、代价、反证与停止条件明确写在决定之前。",), 12)
+    dissents = _bounded_items((f"仍需继续讨论：{topic}" for topic in agenda.topics[:2]), 12)
+    questions = {
+        1: ("上述观点里，哪一个最贴近你的真实处境，哪一个忽略了关键事实？",),
+        2: ("面对这些分歧，你最愿意承担哪一种代价，又最不能承担哪一种？",),
+        3: ("什么证据出现时，你会改变当前倾向或停止行动？",),
+        4: ("你最终想选择什么，并愿意亲自承担它带来的哪项代价？",),
+    }[round_index]
+    next_focus = {
+        1: ("把初步非共识收窄成 2-3 个可直接交锋的议题",),
+        2: ("用反证、最坏情景和二阶效应压力测试分歧",),
+        3: ("形成条件式建议、少数意见与停止条件",),
+        4: ("由决策者确认最终选择、代价和复盘时间",),
+    }[round_index]
+    return RoundSummary(
+        round=round_index,
+        phase=agenda.phase,
+        title=agenda.title,
+        topics=agenda.topics,
+        positions=positions,
+        provisional_conclusions=provisional,
+        consensus=consensus,
+        dissents=dissents,
+        questions_for_user=_bounded_items(questions, 8),
+        next_round_focus=_bounded_items(next_focus, 8),
+        created_at_utc=utc_now_iso(),
+    )
+
+
+def _parse_summary_positions(
+    section: str,
+    fallback_positions: tuple[CouncilPosition, ...],
+) -> tuple[CouncilPosition, ...]:
+    by_id = {position.speaker_id: position for position in fallback_positions}
+    parsed: dict[str, CouncilPosition] = {}
+    for raw in section.splitlines():
+        line = raw.strip().lstrip("-*•　 ").strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [part.strip() for part in line.split("|", 3)]
+        if len(parts) != 4:
+            continue
+        speaker_id, stance, responds_to_id, claim = parts
+        base = by_id.get(speaker_id)
+        if base is None or base.role != "advisor" or speaker_id in parsed:
+            continue
+        clean_stance = stance if stance in _TURN_STANCES else base.stance
+        target = by_id.get(responds_to_id)
+        clean_claim = _bounded_text(claim, MAX_POSITION_CLAIM_CHARS)
+        if not clean_claim:
+            continue
+        parsed[speaker_id] = CouncilPosition(
+            speaker_id=speaker_id,
+            speaker_name=base.speaker_name,
+            claim=clean_claim,
+            stance=clean_stance,
+            responds_to_name=target.speaker_name if target else base.responds_to_name,
+            responds_to_id=responds_to_id if target else base.responds_to_id,
+            role="advisor",
+        )
+    return tuple(parsed.get(position.speaker_id, position) for position in fallback_positions)
+
+
+def build_round_summary(
+    provider: LLMProvider,
+    question: str,
+    grounding: str,
+    transcript: list[dict],
+    turns: Iterable[DialogueEntry],
+    agenda: RoundAgenda,
+    depth: str = "standard",
+) -> RoundSummary:
+    """主持人每轮都形成可被下一轮消费的纪要，避免只堆叠聊天文本。"""
+    turn_list = list(turns)
+    fallback = _fallback_round_summary(agenda.round, agenda, turn_list, transcript)
+    if not provider.configured:
+        return fallback
+    current_text = _format_transcript([turn.to_dict() for turn in turn_list])
+    prompt = "\n\n".join(
+        (
+            f"用户要决策的事：{question}",
+            _untrusted_context("背景、约束与知识", grounding),
+            _untrusted_context("截至本轮的完整讨论", _format_transcript(transcript + [turn.to_dict() for turn in turn_list])),
+            _untrusted_context("本轮新增发言", current_text),
+            f"请为第 {agenda.round} 轮「{agenda.title}」写一份短纪要。不要替用户拍板。"
+            "必须严格使用下面六个标题；共识和非共识都要点明具体议题，不得写空泛套话。"
+            "在『各方观点』下，每位顾问一行，严格写 speaker_id | stance | responds_to_id | 核心主张；"
+            "只能使用讨论中真实出现的 ID，stance 只能是 propose/support/challenge/refine/abstain。"
+            "其余标题每条一行。\n"
+            + "\n".join(f"## {title}" for title in _ROUND_SUMMARY_TITLES),
+        )
+    )
+    try:
+        answer = provider.complete(
+            [{"role": "system", "content": personas.SYNTHESIZER_SYSTEM}, {"role": "user", "content": prompt}],
+            max_tokens=min(context.synthesis_max_tokens(depth), 1400),
+        )
+    except ProviderError:
+        return fallback
+    sections = _split_by_titles(answer.content, _ROUND_SUMMARY_TITLES)
+    parsed = {title: _section_to_bullets(sections[title]) for title in _ROUND_SUMMARY_TITLES if title != "各方观点"}
+    positions = _parse_summary_positions(sections["各方观点"], fallback.positions)
+    return RoundSummary(
+        round=fallback.round,
+        phase=fallback.phase,
+        title=fallback.title,
+        topics=fallback.topics,
+        positions=positions,
+        provisional_conclusions=_bounded_items(parsed["本轮小结论"], 12) or fallback.provisional_conclusions,
+        consensus=_bounded_items(parsed["共识结论"], 12) or fallback.consensus,
+        dissents=_bounded_items(parsed["非共识结论"], 12) or fallback.dissents,
+        questions_for_user=_bounded_items(parsed["向决策者提问"], 8) or fallback.questions_for_user,
+        next_round_focus=_bounded_items(parsed["下一轮焦点"], 8) or fallback.next_round_focus,
+        created_at_utc=utc_now_iso(),
+    )
+
+
+def build_close(
+    provider,
+    question,
+    grounding,
+    transcript,
+    depth="standard",
+    stream_handler=None,
+    summaries: Iterable[object] = (),
+):
     if not provider.configured:
         raw = "（当前未配置大模型，无法收束。配置 API key 后重试。）"
         if stream_handler is not None:
@@ -589,6 +1278,7 @@ def build_close(provider, question, grounding, transcript, depth="standard", str
             (
                 f"用户要决策的事：{question}",
                 _untrusted_context("背景、约束、决策地图与知识", grounding),
+                _untrusted_context("各轮结构化纪要", _format_round_summaries(summaries)),
                 _untrusted_context("完整圆桌讨论与模型输出", _format_transcript(transcript)),
                 "现在请你收束这场圆桌——记住：不替他做决定、不给标准答案，只引导他自己看清、自己抉择。",
             )
@@ -607,10 +1297,11 @@ def build_close(provider, question, grounding, transcript, depth="standard", str
             raw = "（外部模型暂时不可用，未能收束。）"
             if stream_handler is not None:
                 stream_handler(raw)
+    final_round = max((int(item.get("round") or 0) for item in transcript), default=0)
     return DialogueEntry(
-        round=0, role="facilitator", speaker_id="facilitator", speaker_name="主持人", lineage="",
-        content=raw.strip(), citations=(), provider=provider.name, model=provider.model,
-        created_at_utc=utc_now_iso(),
+        round=final_round, role="facilitator", speaker_id="facilitator", speaker_name="主持人", lineage="",
+        content=_bounded_text(raw, MAX_CLOSE_CONTENT_CHARS), citations=(), provider=provider.name, model=provider.model,
+        created_at_utc=utc_now_iso(), entry_id=f"close_{uuid4().hex}", stance="synthesize",
     )
 
 

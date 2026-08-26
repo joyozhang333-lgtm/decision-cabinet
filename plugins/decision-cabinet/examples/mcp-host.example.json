@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "decision-cabinet": {
+      "command": "python3",
+      "args": [
+        "-m",
+        "cabinet.mcp_server"
+      ],
+      "cwd": "/absolute/path/to/decision-cabinet"
+    }
+  }
+}

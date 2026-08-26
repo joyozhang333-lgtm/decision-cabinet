@@ -259,6 +259,54 @@ class DialogueEntry(JsonMixin):
     provider: str
     model: str | None
     created_at_utc: str
+    entry_id: str = ""
+    reply_to_id: str = ""
+    reply_to_name: str = ""
+    reply_excerpt: str = ""
+    stance: str = "propose"       # propose | support | challenge | refine | abstain
+    novelty: str = "new"          # new | refined | low
+    participation_mode: str = ""  # answer | add | focus | listen（仅 founder）
+    delta_type: str = "claim"     # claim | new_evidence | counterexample | condition | position_change | evidence_request | none
+    delta: str = ""               # 本轮相对既有讨论新增的内容
+
+
+@dataclass(frozen=True)
+class RoundAgenda(JsonMixin):
+    """一轮开始前由主持人公开的议事任务。"""
+    round: int
+    phase: str
+    title: str
+    objective: str
+    topics: tuple[str, ...]
+    opening_speaker_id: str = ""
+
+
+@dataclass(frozen=True)
+class CouncilPosition(JsonMixin):
+    """纪要中的一方观点，确保分歧不会被综合文本抹平。"""
+    speaker_id: str
+    speaker_name: str
+    claim: str
+    stance: str
+    responds_to_name: str = ""
+    responds_to_id: str = ""
+    role: str = "advisor"
+
+
+@dataclass(frozen=True)
+class RoundSummary(JsonMixin):
+    """每轮结束后的结构化议事纪要。"""
+    round: int
+    phase: str
+    title: str
+    topics: tuple[str, ...]
+    positions: tuple[CouncilPosition, ...]
+    provisional_conclusions: tuple[str, ...]
+    consensus: tuple[str, ...]
+    dissents: tuple[str, ...]
+    questions_for_user: tuple[str, ...]
+    next_round_focus: tuple[str, ...]
+    created_at_utc: str
 
 
 @dataclass(frozen=True)

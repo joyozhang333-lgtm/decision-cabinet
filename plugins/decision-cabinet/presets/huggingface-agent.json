@@ -1,0 +1,11 @@
+{
+  "model": "Qwen/Qwen2.5-72B-Instruct",
+  "provider": "auto",
+  "servers": [
+    {
+      "type": "stdio",
+      "command": "decision-cabinet-mcp",
+      "args": []
+    }
+  ]
+}

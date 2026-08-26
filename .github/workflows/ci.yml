@@ -26,9 +26,11 @@ jobs:
         run: |
           python -m build --wheel
           python -m venv /tmp/decision-cabinet-wheel
-          /tmp/decision-cabinet-wheel/bin/pip install dist/*.whl
+          WHEEL_PATH=$(find dist -maxdepth 1 -name '*.whl' -print -quit)
+          /tmp/decision-cabinet-wheel/bin/pip install "${WHEEL_PATH}[mcp]"
           cd /tmp
-          /tmp/decision-cabinet-wheel/bin/python -c "from cabinet.advisors import advisor_ids; from cabinet.knowledge import load_all_knowledge; assert len(advisor_ids()) >= 20; assert len(load_all_knowledge()) >= 20"
+          /tmp/decision-cabinet-wheel/bin/python "${GITHUB_WORKSPACE}/scripts/smoke_mcp_install.py" \
+            --command /tmp/decision-cabinet-wheel/bin/decision-cabinet-mcp
 
   web:
     runs-on: ubuntu-latest

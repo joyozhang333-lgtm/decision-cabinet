@@ -1,0 +1,44 @@
+{
+  "name": "decision-cabinet",
+  "version": "0.4.0",
+  "description": "A stateless, local MCP decision council for mapping choices, costs, disagreements, and evolving scenarios.",
+  "author": {
+    "name": "Decision Cabinet contributors",
+    "url": "https://github.com/joyozhang333-lgtm"
+  },
+  "homepage": "https://joyozhang333-lgtm.github.io/decision-cabinet/demo/",
+  "repository": "https://github.com/joyozhang333-lgtm/decision-cabinet",
+  "license": "MIT",
+  "keywords": [
+    "decision-support",
+    "advisory-council",
+    "mcp",
+    "mental-models",
+    "scenario-planning",
+    "openclaw",
+    "决策内阁",
+    "私董会"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Decision Cabinet · 决策内阁",
+    "shortDescription": "Debate choices, costs, and scenarios with a four-round council.",
+    "longDescription": "Search the bundled knowledge base, build an offline decision map, inspect advisor lenses, and structure a four-round council debate without storing user input.",
+    "developerName": "Decision Cabinet contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "websiteURL": "https://joyozhang333-lgtm.github.io/decision-cabinet/demo/",
+    "defaultPrompt": [
+      "Map this decision's choices, costs, and unknowns.",
+      "Run a four-round council debate and keep the dissent visible.",
+      "Search the local knowledge base for this decision."
+    ],
+    "brandColor": "#7C5C3E",
+    "composerIcon": "./assets/decision-cabinet.svg",
+    "logo": "./assets/decision-cabinet.svg"
+  }
+}
