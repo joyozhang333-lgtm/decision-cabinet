@@ -459,6 +459,7 @@ export default function CouncilView({ provider }: { provider: string }) {
     ...transcript.filter((entry) => entry.round > 0).map((entry) => entry.round),
     ...(pendingRound ? [pendingRound.attempt.roundIndex] : []),
   ])).sort((a, b) => a - b);
+  const expandedRound = activeRound || shownRounds.at(-1) || 0;
   const latestSummary = summaries[round];
 
   return (
@@ -600,6 +601,7 @@ export default function CouncilView({ provider }: { provider: string }) {
                   ]}
                   groupById={groupById}
                   pending={pendingRound?.attempt.roundIndex === roundIndex}
+                  open={roundIndex === expandedRound}
                 />
               ))}
               {phase === "running" && (
@@ -680,22 +682,25 @@ function RoundSection({
   entries,
   groupById,
   pending,
+  open,
 }: {
   roundIndex: number;
   agenda?: RoundAgenda;
   entries: DialogueEntry[];
   groupById: Map<string, string>;
   pending?: boolean;
+  open: boolean;
 }) {
   return (
-    <article className={`card round-section${pending ? " pending" : ""}`}>
-      <header className="round-head">
+    <details className={`card round-section${pending ? " pending" : ""}`} open={open}>
+      <summary className="round-head">
         <span>第 {roundIndex} 轮{pending ? " · 进行中" : ""}</span>
         <div>
           <h2>{agenda?.title || ROUND_LABELS[roundIndex - 1]?.[1]}</h2>
           {agenda?.objective && <p>{agenda.objective}</p>}
         </div>
-      </header>
+        <span className="round-chevron" aria-hidden="true">⌄</span>
+      </summary>
       {agenda?.topics?.length ? (
         <div className="round-agenda"><strong>本轮议题</strong>{agenda.topics.map((topic) => <span key={topic}>{topic}</span>)}</div>
       ) : null}
@@ -704,7 +709,7 @@ function RoundSection({
           <DialogueBubble key={entry.entry_id || `${entry.speaker_id}-${entry.content}`} e={entry} group={groupById.get(entry.speaker_id)} />
         ))}
       </div>
-    </article>
+    </details>
   );
 }
 

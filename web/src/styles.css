@@ -322,10 +322,14 @@ button.ghost.sm { padding: 5px 12px; font-size: 12px; }
 .council-thread { min-width: 0; }
 .minutes-rail { min-width: 0; position: sticky; top: 88px; max-height: calc(100vh - 110px); overflow: auto; padding: 1px; }
 .round-section { padding: 0; overflow: hidden; }
-.round-head { display: grid; grid-template-columns: 72px 1fr; gap: 12px; padding: 17px 20px 15px; border-bottom: 1px solid var(--line); background: linear-gradient(90deg, rgba(124,92,62,.08), transparent); }
+.round-head { display: grid; grid-template-columns: 72px 1fr auto; gap: 12px; padding: 17px 20px 15px; cursor: pointer; list-style: none; background: linear-gradient(90deg, rgba(124,92,62,.08), transparent); }
+.round-head::-webkit-details-marker { display: none; }
+.round-section[open] .round-head { border-bottom: 1px solid var(--line); }
 .round-head > span { color: var(--accent); font-size: 12px; letter-spacing: 1px; padding-top: 4px; }
 .round-head h2 { margin: 0; font-family: "Songti SC", "Noto Serif SC", serif; font-size: 21px; line-height: 1.35; }
 .round-head p { margin: 4px 0 0; color: var(--ink-soft); font-size: 13px; line-height: 1.55; }
+.round-head .round-chevron { align-self: center; padding: 0; color: var(--ink-faint); font-size: 20px; transform: rotate(-90deg); transition: transform .18s ease-out; }
+.round-section[open] .round-chevron { transform: rotate(0); }
 .round-agenda { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 11px 20px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
 .round-agenda strong { margin-right: 3px; color: var(--ink-soft); font-size: 12px; }
 .round-agenda span { border: 1px solid var(--line); border-radius: 999px; background: var(--surface); padding: 3px 9px; color: var(--ink-soft); font-size: 11px; }
@@ -403,7 +407,7 @@ button.ghost.sm { padding: 5px 12px; font-size: 12px; }
   .round-stepper li { min-width: 0; border-bottom: 1px solid var(--line); }
   .round-stepper li:nth-child(2), .round-stepper li:nth-child(4) { border-right: none; }
   .round-stepper li:nth-child(3), .round-stepper li:nth-child(4) { border-bottom: none; }
-  .round-head { grid-template-columns: 1fr; gap: 3px; }
+  .round-head { grid-template-columns: auto 1fr auto; gap: 8px; }
   .round-section > .dialogue { padding: 15px 14px 18px; }
   .round-agenda { padding: 10px 14px; }
   .participation-actions { grid-template-columns: 1fr; }
