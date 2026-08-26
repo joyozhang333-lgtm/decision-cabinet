@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.responses import Response
 
@@ -215,6 +217,25 @@ def test_cancelled_close_does_not_persist_unconfirmed_draft(monkeypatch) -> None
     cancelled.set()
     captured["produce"](queue.Queue(), cancelled)
     assert store.list_decisions() == []
+
+
+def test_sse_response_emits_heartbeat_while_provider_is_slow() -> None:
+    app = FastAPI()
+
+    @app.get("/stream")
+    def stream():
+        def produce(events: queue.Queue, cancelled: threading.Event) -> None:
+            time.sleep(0.03)
+            events.put(("done", {"ok": True}))
+
+        return web_api._sse_response(produce, heartbeat_seconds=0.005)
+
+    with TestClient(app) as client:
+        with client.stream("GET", "/stream") as response:
+            body = "".join(response.iter_text())
+
+    assert ": keep-alive\n\n" in body
+    assert "event: done" in body
 
 
 def test_chat_endpoint(client: TestClient) -> None:

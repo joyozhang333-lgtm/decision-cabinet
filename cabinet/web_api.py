@@ -30,6 +30,7 @@ _DEFAULT_UI_ORIGINS = (
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 )
+_SSE_HEARTBEAT_SECONDS = 15.0
 
 
 # --- 请求模型 -----------------------------------------------------------
@@ -678,7 +679,12 @@ def _sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _sse_response(produce, *, release_slot: threading.BoundedSemaphore | None = None) -> StreamingResponse:
+def _sse_response(
+    produce,
+    *,
+    release_slot: threading.BoundedSemaphore | None = None,
+    heartbeat_seconds: float = _SSE_HEARTBEAT_SECONDS,
+) -> StreamingResponse:
     """通用 SSE-over-POST：在后台线程跑 produce(events)，把 (event,data) 逐条吐成 SSE。"""
     def gen():
         events: queue.Queue = queue.Queue()
@@ -703,7 +709,14 @@ def _sse_response(produce, *, release_slot: threading.BoundedSemaphore | None = 
         threading.Thread(target=worker, daemon=True).start()
         try:
             while True:
-                item = events.get()
+                try:
+                    item = events.get(timeout=heartbeat_seconds)
+                except queue.Empty:
+                    # SSE comments keep reverse proxies from treating a slow
+                    # provider call as an idle connection. They are ignored by
+                    # EventSource-compatible parsers and never alter UI state.
+                    yield ": keep-alive\n\n"
+                    continue
                 if item is None:
                     break
                 event, data = item
