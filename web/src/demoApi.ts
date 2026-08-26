@@ -52,6 +52,8 @@ export async function installDemoApi(): Promise<void> {
 export function clearDemoSessionData(): void {
   window.sessionStorage.removeItem(DECISIONS_KEY);
   window.sessionStorage.removeItem(ORG_KEY);
+  window.localStorage.removeItem(DECISIONS_KEY);
+  window.localStorage.removeItem(ORG_KEY);
 }
 
 async function handleDemoRequest(url: URL, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -239,7 +241,7 @@ function councilRound(body: Record<string, unknown>, signal?: AbortSignal): Resp
   return sseSequence(events, signal);
 }
 
-function demoAgenda(round: number, summaries: RoundSummary[], participation: Participation): RoundAgenda {
+export function demoAgenda(round: number, summaries: RoundSummary[], participation: Participation): RoundAgenda {
   const last = summaries.at(-1);
   const phases: Record<number, Pick<RoundAgenda, "phase" | "title" | "objective">> = {
     1: { phase: "facts", title: "事实定界与初步立场", objective: "把事实与推断分开，形成小结论、共识和非共识。" },
@@ -247,10 +249,13 @@ function demoAgenda(round: number, summaries: RoundSummary[], participation: Par
     3: { phase: "stress_test", title: "代价、反证与局势演化", objective: "检验最坏情景、二阶效应和改变立场的信号。" },
     4: { phase: "convergence", title: "条件式收束与少数意见", objective: "说明什么条件下选什么，同时保留少数意见和停止条件。" },
   };
+  const previousDissents = last?.dissents.slice(0, 2) || [];
   const topics = round === 1
     ? ["区分已核实事实、推断与未知", "各方给出初步立场", "形成小结论、共识与非共识"]
     : round === 2
-      ? (last?.dissents.slice(0, 2).map((item) => `争议：${item}`) || ["争议：现在行动还是先验证", "争议：机会窗口是否足以覆盖承载代价"])
+      ? (previousDissents.length > 0
+        ? previousDissents.map((item) => `争议：${item}`)
+        : ["争议：现在行动还是先验证", "争议：机会窗口是否足以覆盖承载代价"])
       : round === 3
         ? ["最坏情景与不可逆代价", "二阶效应与阴阳反转", "什么证据会让各方改变立场"]
         : ["条件式建议与少数意见", "下一步证据和行动", "停止、退出与复盘条件"];
@@ -379,13 +384,17 @@ function demoSummary(
       claim: short(String(founder.content || "")),
       stance: "propose",
       responds_to_name: String(founder.reply_to_name || ""),
+      responds_to_id: String(founder.reply_to_id || ""),
+      role: "founder" as const,
     }] : []),
     ...turns.map((turn) => ({
-    speaker_id: turn.speaker_id,
-    speaker_name: turn.speaker_name,
-    claim: short(turn.content),
-    stance: turn.stance,
-    responds_to_name: turn.reply_to_name,
+      speaker_id: turn.speaker_id,
+      speaker_name: turn.speaker_name,
+      claim: short(turn.content),
+      stance: turn.stance,
+      responds_to_name: turn.reply_to_name,
+      responds_to_id: turn.reply_to_id,
+      role: "advisor" as const,
     })),
   ];
   const names = turns.map((turn) => turn.speaker_name);

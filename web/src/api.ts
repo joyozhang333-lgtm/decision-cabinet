@@ -32,13 +32,21 @@ export interface DecisionMap {
 export interface ClarifyQuestion { q: string; why: string }
 export interface ClarifyAnswer { q: string; a: string }
 export interface Citation { kind: string; code: string; title: string; path: string }
+export type DeltaType =
+  | "claim"
+  | "new_evidence"
+  | "counterexample"
+  | "condition"
+  | "position_change"
+  | "evidence_request"
+  | "none";
 export interface DialogueEntry {
   round: number; role: string; speaker_id: string; speaker_name: string;
   lineage: string; content: string; citations: Citation[]; provider: string; model: string | null;
   entry_id: string; reply_to_id: string; reply_to_name: string; reply_excerpt: string;
   stance: "propose" | "support" | "challenge" | "refine" | "abstain" | "synthesize";
   novelty: "new" | "refined" | "low"; participation_mode: ParticipationMode | "";
-  delta_type?: "claim" | "new_evidence" | "counterexample" | "condition" | "position_change" | "evidence_request" | "none" | "";
+  delta_type?: DeltaType;
   delta?: string;
 }
 export type ParticipationMode = "answer" | "add" | "focus" | "listen";
@@ -54,7 +62,8 @@ export interface RoundAgenda {
   title: string; objective: string; topics: string[]; opening_speaker_id: string;
 }
 export interface CouncilPosition {
-  speaker_id: string; speaker_name: string; claim: string; stance: string; responds_to_name: string;
+  speaker_id: string; speaker_name: string; claim: string; stance: string;
+  responds_to_name: string; responds_to_id: string; role: "advisor" | "founder";
 }
 export interface RoundSummary {
   round: number; phase: RoundAgenda["phase"]; title: string; topics: string[];

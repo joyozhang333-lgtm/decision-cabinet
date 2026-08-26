@@ -222,7 +222,7 @@ export default function CouncilView({ provider }: { provider: string }) {
     stance: e.stance,
     novelty: e.novelty,
     participation_mode: e.participation_mode,
-    delta_type: e.delta_type || "",
+    delta_type: e.delta_type || "none",
     delta: e.delta || "",
   }));
 
@@ -395,6 +395,7 @@ export default function CouncilView({ provider }: { provider: string }) {
 
   function reviseRetry() {
     if (!retryAttempt) return;
+    if (retryAttempt.roundIndex <= 1 || round !== retryAttempt.roundIndex - 1) return;
     setParticipationMode(retryAttempt.participation.mode);
     setFounderInput(retryAttempt.participation.mode === "listen" ? "" : retryAttempt.participation.content);
     setRetryAttempt(null);
@@ -461,6 +462,10 @@ export default function CouncilView({ provider }: { provider: string }) {
   ])).sort((a, b) => a - b);
   const expandedRound = activeRound || shownRounds.at(-1) || 0;
   const latestSummary = summaries[round];
+  const canReviseRetry = Boolean(retryAttempt && retryAttempt.roundIndex > 1 && round === retryAttempt.roundIndex - 1);
+  const canParticipate = phase === "idle" && !retryAttempt && !retryClose && transcript.length > 0 && round < 4;
+  const canRequestClose = phase === "idle" && !retryAttempt && !retryClose && round === 4;
+  const showControls = phase === "running" || phase === "closing" || canParticipate || canRequestClose;
 
   return (
     <div>
@@ -572,7 +577,7 @@ export default function CouncilView({ provider }: { provider: string }) {
               <button className="primary" onClick={() => void runRoundAttempt(retryAttempt)}>
                 重试第 {retryAttempt.roundIndex} 轮
               </button>
-              <button className="ghost" onClick={reviseRetry}>修改我的参与方式</button>
+              {canReviseRetry && <button className="ghost" onClick={reviseRetry}>修改我的参与方式</button>}
             </div>
           )}
           {retryClose && phase === "idle" && (
@@ -622,9 +627,9 @@ export default function CouncilView({ provider }: { provider: string }) {
                 </div>
               )}
             </section>
-            {phase !== "closed" && (
+            {phase !== "closed" && showControls && (
               <div className="card controls">
-                {phase === "idle" && !retryAttempt && !retryClose && transcript.length > 0 && round < 4 && (
+                {canParticipate && (
                   <FounderParticipation
                     mode={participationMode}
                     setMode={setParticipationMode}
@@ -638,7 +643,7 @@ export default function CouncilView({ provider }: { provider: string }) {
                     onClose={closeCouncil}
                   />
                 )}
-                {phase === "idle" && !retryClose && round === 4 && (
+                {canRequestClose && (
                   <div className="round-complete">
                     <div><strong>四轮议事已完成。</strong><span className="muted"> 现在请主持人保留少数意见，把决定权交回给你。</span></div>
                     <button className="primary" onClick={closeCouncil}>请内阁收束</button>
