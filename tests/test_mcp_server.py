@@ -85,6 +85,19 @@ def test_prepare_roundtable_turn_rejects_invalid_round(round_index: int) -> None
         mcp_server.prepare_roundtable_turn("要不要试点？", round_index, "analyst")
 
 
+@pytest.mark.parametrize(
+    "advisor_id",
+    ("../knowledge/decision/choice-cost", "../../../README", "/etc/passwd", "laozi/../../README"),
+)
+def test_prepare_roundtable_turn_rejects_malicious_advisor_paths(advisor_id: str) -> None:
+    with pytest.raises(ValueError, match="unknown advisor_id") as exc_info:
+        mcp_server.prepare_roundtable_turn("要不要试点？", 1, advisor_id)
+
+    message = str(exc_info.value)
+    assert "cabinet/resources" not in message
+    assert str(Path(__file__).resolve().parents[1]) not in message
+
+
 def test_sdk_import_fallback_handles_missing_or_v1_sdk() -> None:
     def missing_v2(name: str, *args, **kwargs):
         if name == "mcp.server":
@@ -230,6 +243,7 @@ def test_streamable_http_protocol_lists_and_calls_public_tools() -> None:
             streamable_http_path="/mcp",
             stateless_http=True,
             host="127.0.0.1",
+            transport_security=mcp_server._loopback_transport_security("127.0.0.1"),
         )
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
@@ -237,6 +251,22 @@ def test_streamable_http_protocol_lists_and_calls_public_tools() -> None:
                 transport=transport,
                 base_url="http://127.0.0.1:8765",
             ) as client:
+                protocol_headers = {
+                    "content-type": "application/json",
+                    "accept": "application/json, text/event-stream",
+                }
+                bad_host = await client.post(
+                    "/mcp",
+                    headers={**protocol_headers, "host": "attacker.example"},
+                    content=b"{}",
+                )
+                assert bad_host.status_code == 421
+                bad_origin = await client.post(
+                    "/mcp",
+                    headers={**protocol_headers, "origin": "https://attacker.example"},
+                    content=b"{}",
+                )
+                assert bad_origin.status_code == 403
                 async with streamable_http_client(
                     "http://127.0.0.1:8765/mcp",
                     http_client=client,

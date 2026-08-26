@@ -314,6 +314,28 @@ def test_private_ui_api_blocks_cross_site_and_untrusted_remote_clients(monkeypat
     assert local.get("/api/org-memory", headers={"X-API-Key": "remote-secret"}).status_code == 200
 
 
+def test_private_ui_api_only_trusts_exact_browser_origins(monkeypatch) -> None:
+    monkeypatch.setattr(web_api, "get_provider", lambda name=None: FakeProvider())
+    monkeypatch.delenv("CABINET_UI_API_KEY", raising=False)
+    monkeypatch.delenv("CABINET_UI_ORIGINS", raising=False)
+    local = TestClient(web_api.create_app(CabinetStore(":memory:")))
+
+    allowed = local.get("/api/org-memory", headers={"Origin": "http://localhost:5173"})
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+    untrusted = local.get("/api/org-memory", headers={"Origin": "http://localhost:9999"})
+    assert untrusted.status_code == 403
+    assert untrusted.json()["detail"]["code"] == "untrusted_origin"
+    assert "access-control-allow-origin" not in untrusted.headers
+
+    monkeypatch.setenv("CABINET_UI_ORIGINS", "https://cabinet.example.com")
+    configured = TestClient(web_api.create_app(CabinetStore(":memory:")))
+    trusted = configured.get("/api/org-memory", headers={"Origin": "https://cabinet.example.com"})
+    assert trusted.status_code == 200
+    assert trusted.headers["access-control-allow-origin"] == "https://cabinet.example.com"
+
+
 def test_external_key_does_not_break_local_ui(monkeypatch) -> None:
     monkeypatch.setattr(web_api, "get_provider", lambda name=None: FakeProvider())
     monkeypatch.setenv("CABINET_EXTERNAL_API_KEY", "external-only")

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from cabinet import personas
 from cabinet.advisors import (
+    AdvisorNotFoundError,
     VALID_CATEGORIES,
     advisor_ids,
     load_advisor,
@@ -26,6 +29,15 @@ def test_named_advisors_present() -> None:
     ids = set(advisor_ids())
     for required in ("laozi", "kongzi", "shakyamuni", "padmasambhava", "huineng", "munger", "drucker", "jung", "analyst"):
         assert required in ids
+
+
+@pytest.mark.parametrize(
+    "advisor_id",
+    ("../knowledge/decision/choice-cost", "../../../README", "/etc/passwd", "laozi/../../README"),
+)
+def test_advisor_loader_rejects_paths_outside_packaged_allowlist(advisor_id: str) -> None:
+    with pytest.raises(AdvisorNotFoundError):
+        load_advisor(advisor_id)
 
 
 def test_sages_have_canon_with_existing_paths() -> None:

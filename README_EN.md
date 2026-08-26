@@ -173,7 +173,7 @@ See [Agent integrations](docs/INTEGRATIONS_EN.md) / [中文接入指南](docs/IN
 
 - `.env`, SQLite databases, virtual environments, and generated frontend assets are ignored by Git.
 - The decision dossier and decision history are not sent to an external provider unless the user opts in for that round.
-- Private UI APIs accept loopback clients by default. Remote access requires `CABINET_UI_API_KEY`.
+- Private UI APIs accept loopback clients by default, and browser access trusts only `localhost:5173` and `127.0.0.1:5173` unless configured otherwise. Remote access requires `CABINET_UI_API_KEY` plus the exact frontend origin in the comma-separated `CABINET_UI_ORIGINS` setting.
 - The external API remains disabled unless `CABINET_EXTERNAL_API_KEY` is configured.
 - User-provided context and model output are treated as untrusted data, not system instructions.
 - Request sizes, transcript sizes, advisor counts, and concurrent streaming sessions are bounded.

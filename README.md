@@ -195,7 +195,7 @@ CABINET_OPENAI_MODEL=
 - 使用外部模型时，本轮问题、回答、地图和对话会发送给对应 provider；
 - 「决策档案」与最近已决/复盘记录默认不发送。只有用户在本轮勾选后，才会把使命、价值观、受影响者、业务/资产/责任主线、约束、标题、选择、理由和复盘结果发送给所选 provider；
 - 对外 API 默认关闭，只有设置 `CABINET_EXTERNAL_API_KEY` 后才启用（仍兼容旧名 `CABINET_API_KEY`）；
-- 私有 UI API 默认仅允许本机访问。若通过反向代理或局域网开放，必须设置 `CABINET_UI_API_KEY`；远程页面会显示密钥输入框，密钥仅保存在该浏览器的 localStorage。
+- 私有 UI API 默认仅允许本机访问，浏览器来源默认只信任 `localhost:5173` 与 `127.0.0.1:5173`。若通过反向代理或局域网开放，必须设置 `CABINET_UI_API_KEY`，并将前端的精确 Origin 加入逗号分隔的 `CABINET_UI_ORIGINS`；远程页面会显示密钥输入框，密钥仅保存在该浏览器的 localStorage。
 
 ## API
 

@@ -26,6 +26,11 @@ from .version import VERSION
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_UI_ORIGINS = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+)
+
 
 # --- 请求模型 -----------------------------------------------------------
 
@@ -288,10 +293,10 @@ def create_app(store: CabinetStore | None = None) -> FastAPI:
         description="开源 AI 决策支持系统：决策地图、可追溯知识库、多轮私董会、决策日志与复盘。",
     )
     sse_slots = threading.BoundedSemaphore(value=2)
+    allowed_ui_origins = _allowed_ui_origins()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-        allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+        allow_origins=list(allowed_ui_origins),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -307,6 +312,13 @@ def create_app(store: CabinetStore | None = None) -> FastAPI:
             return JSONResponse(
                 status_code=403,
                 content={"detail": {"code": "cross_site_blocked", "message": "拒绝跨站访问本地决策数据。"}},
+            )
+        origin = request.headers.get("origin", "").rstrip("/")
+        host_origin = f"{request.url.scheme}://{request.headers.get('host', '')}".rstrip("/")
+        if origin and origin != host_origin and origin not in allowed_ui_origins:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": {"code": "untrusted_origin", "message": "这个网页来源未获准访问本地决策数据。"}},
             )
         host = request.client.host if request.client else ""
         forwarded = bool(request.headers.get("x-forwarded-for"))
@@ -710,6 +722,20 @@ def context_env(key: str) -> str | None:
     # 与模型配置使用同一份 .env 解析。
     from .providers import _env_with_dotenv
     return _env_with_dotenv().get(key)
+
+
+def _allowed_ui_origins() -> tuple[str, ...]:
+    """Return exact browser origins trusted to call the private local UI API."""
+    configured = os.environ.get("CABINET_UI_ORIGINS") or context_env("CABINET_UI_ORIGINS") or ""
+    extras = (
+        item.strip().rstrip("/")
+        for item in configured.split(",")
+    )
+    safe_extras = (
+        item for item in extras
+        if item.startswith(("http://", "https://")) and "*" not in item
+    )
+    return tuple(dict.fromkeys((*_DEFAULT_UI_ORIGINS, *safe_extras)))
 
 
 def _memory_for_request(store: CabinetStore, include_memory: bool) -> tuple[OrgMemory, tuple]:
