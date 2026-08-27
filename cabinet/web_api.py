@@ -4,10 +4,13 @@ from __future__ import annotations
 import json
 import hmac
 import ipaddress
+import logging
 import os
 import queue
 import threading
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,12 +25,21 @@ from .schema import ChatMessage, FactSheet, OrgMemory, utc_now_iso
 from .store import CabinetStore, NotFoundError
 from .version import VERSION
 
+logger = logging.getLogger(__name__)
+
+_DEFAULT_UI_ORIGINS = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+)
+_SSE_HEARTBEAT_SECONDS = 15.0
+MAX_COUNCIL_REQUEST_CONTEXT_CHARS = 320_000
+
 
 # --- 请求模型 -----------------------------------------------------------
 
 ShortText = Annotated[str, StringConstraints(max_length=500)]
 LongText = Annotated[str, StringConstraints(max_length=12000)]
-TranscriptText = Annotated[str, StringConstraints(max_length=4000)]
+TranscriptText = Annotated[str, StringConstraints(max_length=council.MAX_TRANSCRIPT_CONTENT_CHARS)]
 
 class FactSheetIn(BaseModel):
     facts: list[ShortText] = Field(default_factory=list, max_length=50)
@@ -88,10 +100,60 @@ class DeliberateRequest(BaseModel):
 
 class TranscriptEntryIn(BaseModel):
     round: int = 0
-    role: str = "advisor"
+    role: Literal["advisor", "founder", "facilitator"] = "advisor"
     speaker_id: ShortText = ""
     speaker_name: ShortText = ""
     content: TranscriptText = ""
+    entry_id: ShortText = ""
+    reply_to_id: ShortText = ""
+    reply_to_name: ShortText = ""
+    reply_excerpt: ShortText = ""
+    stance: Literal["propose", "support", "challenge", "refine", "abstain", "synthesize"] = "propose"
+    novelty: Literal["new", "refined", "low"] = "new"
+    participation_mode: Literal["", "answer", "add", "focus", "listen"] = ""
+    delta_type: Literal[
+        "claim", "new_evidence", "counterexample", "condition",
+        "position_change", "evidence_request", "none",
+    ] = "claim"
+    delta: ShortText = ""
+
+
+class RoundPositionIn(BaseModel):
+    speaker_id: ShortText = ""
+    speaker_name: ShortText = ""
+    claim: str = Field(default="", max_length=2000)
+    stance: ShortText = "propose"
+    responds_to_name: ShortText = ""
+    responds_to_id: ShortText = ""
+    role: Literal["advisor", "founder"] = "advisor"
+
+
+class RoundSummaryIn(BaseModel):
+    round: int = Field(ge=1, le=4)
+    phase: Literal["facts", "debate", "stress_test", "convergence"]
+    title: ShortText
+    topics: list[ShortText] = Field(default_factory=list, max_length=10)
+    positions: list[RoundPositionIn] = Field(default_factory=list, max_length=council.MAX_ROUND_ADVISORS + 1)
+    provisional_conclusions: list[ShortText] = Field(default_factory=list, max_length=12)
+    consensus: list[ShortText] = Field(default_factory=list, max_length=12)
+    dissents: list[ShortText] = Field(default_factory=list, max_length=12)
+    questions_for_user: list[ShortText] = Field(default_factory=list, max_length=8)
+    next_round_focus: list[ShortText] = Field(default_factory=list, max_length=8)
+    created_at_utc: ShortText = ""
+
+
+class ParticipationIn(BaseModel):
+    mode: Literal["answer", "add", "focus", "listen"] = "listen"
+    content: str = Field(default="", max_length=4000)
+    reply_to_id: ShortText = ""
+    reply_to_name: ShortText = ""
+    reply_excerpt: ShortText = ""
+
+    @model_validator(mode="after")
+    def text_required_for_active_modes(self):
+        if self.mode != "listen" and not self.content.strip():
+            raise ValueError("回答、补充或指定争议时必须填写内容。")
+        return self
 
 
 class OptionMapIn(BaseModel):
@@ -139,14 +201,30 @@ class RoundRequest(BaseModel):
     provider: str | None = None
     advisor_ids: list[ShortText] | None = Field(default=None, max_length=16)
     background: str = Field(default="", max_length=20000)
-    transcript: list[TranscriptEntryIn] = Field(default_factory=list, max_length=60)
-    round_index: int = 1
+    transcript: list[TranscriptEntryIn] = Field(default_factory=list, max_length=100)
+    summaries: list[RoundSummaryIn] = Field(default_factory=list, max_length=4)
+    participation: ParticipationIn = Field(default_factory=ParticipationIn)
+    round_index: int = Field(default=1, ge=1, le=4)
     include_memory: bool = False
 
     @model_validator(mode="after")
     def bounded_prompt(self):
-        if len(self.background) + sum(len(item.content) for item in self.transcript) > 80000:
-            raise ValueError("圆桌背景与对话总长度不得超过 80000 字符。")
+        if self.advisor_ids and len(set(self.advisor_ids)) != len(self.advisor_ids):
+            raise ValueError("参会顾问不得重复。")
+        summary_rounds = [item.round for item in self.summaries]
+        expected_rounds = list(range(1, self.round_index))
+        if summary_rounds != expected_rounds:
+            raise ValueError(f"第 {self.round_index} 轮必须携带按顺序完成的前序纪要：{expected_rounds}。")
+        summary_size = sum(len(item.model_dump_json()) for item in self.summaries)
+        if (
+            len(self.background)
+            + sum(len(item.content) for item in self.transcript)
+            + summary_size
+            > MAX_COUNCIL_REQUEST_CONTEXT_CHARS
+        ):
+            raise ValueError(
+                f"圆桌背景、对话与纪要总长度不得超过 {MAX_COUNCIL_REQUEST_CONTEXT_CHARS} 字符。"
+            )
         return self
 
 
@@ -155,14 +233,26 @@ class CloseRequest(BaseModel):
     depth: str = "standard"
     provider: str | None = None
     background: str = Field(default="", max_length=20000)
-    transcript: list[TranscriptEntryIn] = Field(default_factory=list, max_length=60)
+    transcript: list[TranscriptEntryIn] = Field(default_factory=list, max_length=100)
+    summaries: list[RoundSummaryIn] = Field(default_factory=list, max_length=4)
     decision_map: DecisionMapIn | None = None
     include_memory: bool = False
 
     @model_validator(mode="after")
     def bounded_prompt(self):
-        if len(self.background) + sum(len(item.content) for item in self.transcript) > 80000:
-            raise ValueError("收束背景与对话总长度不得超过 80000 字符。")
+        summary_rounds = [item.round for item in self.summaries]
+        if summary_rounds and summary_rounds != list(range(1, max(summary_rounds) + 1)):
+            raise ValueError("收束前的各轮纪要必须从第 1 轮开始、按顺序且不重复。")
+        summary_size = sum(len(item.model_dump_json()) for item in self.summaries)
+        if (
+            len(self.background)
+            + sum(len(item.content) for item in self.transcript)
+            + summary_size
+            > MAX_COUNCIL_REQUEST_CONTEXT_CHARS
+        ):
+            raise ValueError(
+                f"收束背景、对话与纪要总长度不得超过 {MAX_COUNCIL_REQUEST_CONTEXT_CHARS} 字符。"
+            )
         return self
 
 
@@ -220,10 +310,10 @@ def create_app(store: CabinetStore | None = None) -> FastAPI:
         description="开源 AI 决策支持系统：决策地图、可追溯知识库、多轮私董会、决策日志与复盘。",
     )
     sse_slots = threading.BoundedSemaphore(value=2)
+    allowed_ui_origins = _allowed_ui_origins()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-        allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+        allow_origins=list(allowed_ui_origins),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -240,6 +330,23 @@ def create_app(store: CabinetStore | None = None) -> FastAPI:
                 status_code=403,
                 content={"detail": {"code": "cross_site_blocked", "message": "拒绝跨站访问本地决策数据。"}},
             )
+        host_header = request.headers.get("host", "")
+        if not _is_trusted_ui_host(host_header, request.url.scheme, allowed_ui_origins):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": {"code": "untrusted_host", "message": "这个 Host 未获准访问本地决策数据。"}},
+            )
+        origin = request.headers.get("origin", "").rstrip("/")
+        if origin and not _is_trusted_ui_origin(
+            origin,
+            allowed_ui_origins,
+            request_host=host_header,
+            request_scheme=request.url.scheme,
+        ):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": {"code": "untrusted_origin", "message": "这个网页来源未获准访问本地决策数据。"}},
+            )
         host = request.client.host if request.client else ""
         forwarded = bool(request.headers.get("x-forwarded-for"))
         expected = os.environ.get("CABINET_UI_API_KEY") or context_env("CABINET_UI_API_KEY")
@@ -250,7 +357,7 @@ def create_app(store: CabinetStore | None = None) -> FastAPI:
                     status_code=401,
                     content={"detail": {"code": "invalid_api_key", "message": "访问需要有效的 X-API-Key。"}},
                 )
-        elif forwarded or not _is_loopback_client(host):
+        elif forwarded or not _is_loopback_authority(host_header, request.url.scheme) or not _is_loopback_client(host):
             return JSONResponse(
                 status_code=403,
                 content={"detail": {"code": "remote_ui_disabled", "message": "私有 UI API 默认仅允许本机访问。"}},
@@ -402,22 +509,67 @@ def create_app(store: CabinetStore | None = None) -> FastAPI:
         prov = get_provider(request.provider)
         org, recent = _memory_for_request(active_store, request.include_memory)
         grounding = council.build_grounding(org, recent, request.background, question=request.question)
-        advisors = council.route_advisors(
-            request.question, tuple(request.advisor_ids) if request.advisor_ids else None
-        )
-        transcript = [e.model_dump() for e in request.transcript]
+        requested_ids = tuple(request.advisor_ids) if request.advisor_ids else council.DEFAULT_ROUND_ADVISOR_IDS
+        advisors = council.route_advisors(request.question, requested_ids)
+        if len(advisors) > council.MAX_ROUND_ADVISORS:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "too_many_advisors", "message": f"每轮最多允许 {council.MAX_ROUND_ADVISORS} 位顾问。"},
+            )
+        known_advisors = {advisor.id: advisor for advisor in load_all_advisors()}
+        transcript: list[dict[str, Any]] = []
+        for entry in request.transcript:
+            item = entry.model_dump()
+            if entry.role == "advisor":
+                known = known_advisors.get(entry.speaker_id)
+                if known is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={"code": "unknown_transcript_advisor", "message": "历史发言包含未知顾问。"},
+                    )
+                item["speaker_name"] = known.name
+            elif entry.role == "founder":
+                item["speaker_id"], item["speaker_name"] = "founder", "我"
+            else:
+                item["speaker_id"], item["speaker_name"] = "facilitator", "主持人"
+            transcript.append(item)
+        summaries = [item.model_dump() for item in request.summaries]
+        participation = request.participation.model_dump()
+        transcript = council.with_user_participation(transcript, participation, request.round_index)
+        agenda = council.build_round_agenda(request.round_index, summaries, participation)
 
         if not sse_slots.acquire(blocking=False):
             raise HTTPException(status_code=429, detail={"code": "too_many_councils", "message": "同时运行的圆桌已达上限。"})
 
         def produce(events: queue.Queue, cancelled: threading.Event) -> None:
+            events.put(("agenda", agenda.to_dict()))
             turns = council.run_round(
                 prov, request.question, advisors, grounding, transcript,
                 request.round_index, request.depth,
                 on_turn=lambda t: events.put(("turn", t.to_dict())),
                 should_stop=cancelled.is_set,
+                agenda=agenda,
+                prior_summaries=summaries,
+                participation=participation,
             )
-            events.put(("done", {"round": request.round_index, "turns": [t.to_dict() for t in turns]}))
+            if cancelled.is_set():
+                return
+            summary = council.build_round_summary(
+                prov,
+                request.question,
+                grounding,
+                transcript,
+                turns,
+                agenda,
+                request.depth,
+            )
+            events.put(("round_summary", summary.to_dict()))
+            events.put(("done", {
+                "round": request.round_index,
+                "turns": [t.to_dict() for t in turns],
+                "summary": summary.to_dict(),
+                "next_action": "close" if request.round_index == 4 else "participate_or_listen",
+            }))
 
         return _sse_response(produce, release_slot=sse_slots)
 
@@ -428,6 +580,7 @@ def create_app(store: CabinetStore | None = None) -> FastAPI:
         org, recent = _memory_for_request(active_store, request.include_memory)
         grounding = council.build_grounding(org, recent, request.background, question=request.question)
         transcript = [e.model_dump() for e in request.transcript]
+        summaries = [item.model_dump() for item in request.summaries]
 
         if not sse_slots.acquire(blocking=False):
             raise HTTPException(status_code=429, detail={"code": "too_many_councils", "message": "同时运行的圆桌已达上限。"})
@@ -436,6 +589,7 @@ def create_app(store: CabinetStore | None = None) -> FastAPI:
             entry = council.build_close(
                 prov, request.question, grounding, transcript, request.depth,
                 stream_handler=lambda tok: events.put(("token", tok)),
+                summaries=summaries,
             )
             if cancelled.is_set():
                 return
@@ -551,7 +705,12 @@ def _sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _sse_response(produce, *, release_slot: threading.BoundedSemaphore | None = None) -> StreamingResponse:
+def _sse_response(
+    produce,
+    *,
+    release_slot: threading.BoundedSemaphore | None = None,
+    heartbeat_seconds: float = _SSE_HEARTBEAT_SECONDS,
+) -> StreamingResponse:
     """通用 SSE-over-POST：在后台线程跑 produce(events)，把 (event,data) 逐条吐成 SSE。"""
     def gen():
         events: queue.Queue = queue.Queue()
@@ -560,8 +719,14 @@ def _sse_response(produce, *, release_slot: threading.BoundedSemaphore | None = 
         def worker() -> None:
             try:
                 produce(events, cancelled)
-            except Exception as exc:  # noqa: BLE001 - 转成 SSE error 事件
-                events.put(("error", {"message": str(exc)}))
+            except Exception:  # noqa: BLE001 - 服务端记录细节，客户端只收稳定错误
+                correlation_id = uuid4().hex
+                logger.exception("SSE producer failed (correlation_id=%s)", correlation_id)
+                events.put(("error", {
+                    "code": "council_stream_failed",
+                    "message": "本轮议事未完成，请重试。",
+                    "correlation_id": correlation_id,
+                }))
             finally:
                 events.put(None)
                 if release_slot is not None:
@@ -570,7 +735,14 @@ def _sse_response(produce, *, release_slot: threading.BoundedSemaphore | None = 
         threading.Thread(target=worker, daemon=True).start()
         try:
             while True:
-                item = events.get()
+                try:
+                    item = events.get(timeout=heartbeat_seconds)
+                except queue.Empty:
+                    # SSE comments keep reverse proxies from treating a slow
+                    # provider call as an idle connection. They are ignored by
+                    # EventSource-compatible parsers and never alter UI state.
+                    yield ": keep-alive\n\n"
+                    continue
                 if item is None:
                     break
                 event, data = item
@@ -589,6 +761,122 @@ def context_env(key: str) -> str | None:
     # 与模型配置使用同一份 .env 解析。
     from .providers import _env_with_dotenv
     return _env_with_dotenv().get(key)
+
+
+def _default_port(scheme: str) -> int | None:
+    return {"http": 80, "https": 443}.get(scheme.casefold())
+
+
+def _origin_key(value: str) -> tuple[str, str, int | None] | None:
+    """Parse a path-free HTTP(S) origin into a canonical comparison key."""
+    try:
+        parsed = urlsplit(value.strip())
+        port = parsed.port
+    except ValueError:
+        return None
+    scheme = parsed.scheme.casefold()
+    host = (parsed.hostname or "").casefold()
+    if (
+        scheme not in {"http", "https"}
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    return scheme, host, port or _default_port(scheme)
+
+
+def _canonical_origin(value: str) -> str | None:
+    key = _origin_key(value)
+    if key is None:
+        return None
+    scheme, host, effective_port = key
+    rendered_host = f"[{host}]" if ":" in host else host
+    port = "" if effective_port == _default_port(scheme) else f":{effective_port}"
+    return f"{scheme}://{rendered_host}{port}"
+
+
+def _authority_key(value: str, scheme: str) -> tuple[str, str, int | None] | None:
+    candidate = value.strip()
+    if not candidate:
+        return None
+    try:
+        parsed = urlsplit(f"{scheme}://{candidate}")
+        port = parsed.port
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").casefold()
+    normalized_scheme = scheme.casefold()
+    if (
+        normalized_scheme not in {"http", "https"}
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    return normalized_scheme, host, port or _default_port(normalized_scheme)
+
+
+def _is_loopback_hostname(host: str) -> bool:
+    if host.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_loopback_authority(value: str, scheme: str) -> bool:
+    key = _authority_key(value, scheme)
+    return bool(key and _is_loopback_hostname(key[1]))
+
+
+def _is_trusted_ui_host(value: str, scheme: str, allowed_origins: tuple[str, ...]) -> bool:
+    key = _authority_key(value, scheme)
+    if key is None:
+        return False
+    if _is_loopback_hostname(key[1]):
+        return True
+    return key in {_origin_key(origin) for origin in allowed_origins}
+
+
+def _is_trusted_ui_origin(
+    value: str,
+    allowed_origins: tuple[str, ...],
+    *,
+    request_host: str = "",
+    request_scheme: str = "http",
+) -> bool:
+    key = _origin_key(value)
+    if key is None:
+        return False
+    if key in {_origin_key(origin) for origin in allowed_origins}:
+        return True
+    request_key = _authority_key(request_host, request_scheme)
+    return bool(
+        request_key
+        and _is_loopback_hostname(key[1])
+        and _is_loopback_hostname(request_key[1])
+        and key == request_key
+    )
+
+
+def _allowed_ui_origins() -> tuple[str, ...]:
+    """Return normalized exact browser origins trusted by CORS and host checks."""
+    configured = os.environ.get("CABINET_UI_ORIGINS") or context_env("CABINET_UI_ORIGINS") or ""
+    candidates = (*_DEFAULT_UI_ORIGINS, *(item.strip() for item in configured.split(",")))
+    normalized = (
+        _canonical_origin(item)
+        for item in candidates
+        if item and "*" not in item
+    )
+    return tuple(dict.fromkeys(item for item in normalized if item is not None))
 
 
 def _memory_for_request(store: CabinetStore, include_memory: bool) -> tuple[OrgMemory, tuple]:

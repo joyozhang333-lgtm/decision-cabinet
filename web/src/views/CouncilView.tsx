@@ -5,6 +5,10 @@ import {
   ClarifyQuestion,
   DecisionMap,
   DialogueEntry,
+  Participation,
+  ParticipationMode,
+  RoundAgenda,
+  RoundSummary,
   listAdvisors,
   patchDecision,
   requestClarify,
@@ -22,10 +26,43 @@ const DEPTHS: [string, string][] = [
 
 const CORE_IDS = ["analyst", "investment-analyst", "munger", "drucker", "growth-strategist", "jung", "laozi", "huineng"];
 const MAX_ADVISORS_PER_ROUND = 16;
+const ROUND_LABELS = [
+  [1, "事实定界"],
+  [2, "聚焦争议"],
+  [3, "压力测试"],
+  [4, "条件收束"],
+] as const;
 
 const monogram = (name: string) => name.replace(/[·•\s]/g, "").slice(0, 1);
 
 type Phase = "idle" | "running" | "closing" | "closed";
+
+interface RoundAttempt {
+  roundIndex: number;
+  participation: Participation;
+  founderEntry: DialogueEntry | null;
+  baseTranscript: DialogueEntry[];
+  priorSummaries: RoundSummary[];
+  advisorIds: string[];
+  background: string;
+  question: string;
+  depth: string;
+  provider?: string;
+  includeMemory: boolean;
+}
+
+interface PendingRound {
+  attempt: RoundAttempt;
+  agenda?: RoundAgenda;
+  turns: DialogueEntry[];
+  summary?: RoundSummary;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException
+    ? error.name === "AbortError"
+    : error instanceof Error && error.name === "AbortError";
+}
 
 export default function CouncilView({ provider }: { provider: string }) {
   const [question, setQuestion] = useState("");
@@ -40,26 +77,40 @@ export default function CouncilView({ provider }: { provider: string }) {
   const [includeMemory, setIncludeMemory] = useState(false);
 
   const [transcript, setTranscript] = useState<DialogueEntry[]>([]);
+  const [agendas, setAgendas] = useState<Record<number, RoundAgenda>>({});
+  const [summaries, setSummaries] = useState<Record<number, RoundSummary>>({});
   const [round, setRound] = useState(0);
+  const [activeRound, setActiveRound] = useState(0);
   const [phase, setPhase] = useState<Phase>("idle");
   const [closeText, setCloseText] = useState("");
   const [decisionId, setDecisionId] = useState<string | null>(null);
   const [founderInput, setFounderInput] = useState("");
+  const [participationMode, setParticipationMode] = useState<ParticipationMode>("answer");
+  const [answerQuestionIndex, setAnswerQuestionIndex] = useState(0);
   const [error, setError] = useState("");
-  const streamRef = useRef<HTMLDivElement>(null);
+  const [sessionStarted, setSessionStarted] = useState(false);
+  const [pendingRound, setPendingRound] = useState<PendingRound | null>(null);
+  const [retryAttempt, setRetryAttempt] = useState<RoundAttempt | null>(null);
+  const [retryClose, setRetryClose] = useState(false);
+  const requestController = useRef<AbortController | null>(null);
+  const requestSerial = useRef(0);
 
   useEffect(() => {
+    let cancelled = false;
     listAdvisors().then((r) => {
+      if (cancelled) return;
       setAdvisors(r.advisors);
       const present = new Set(r.advisors.map((a) => a.id));
       const core = CORE_IDS.filter((id) => present.has(id));
       setSelected(new Set(core.length ? core : r.advisors.slice(0, 6).map((a) => a.id)));
     });
+    return () => {
+      cancelled = true;
+      requestSerial.current += 1;
+      requestController.current?.abort();
+      requestController.current = null;
+    };
   }, []);
-  useEffect(() => {
-    streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight, behavior: "smooth" });
-  }, [transcript, closeText]);
-
   const groupById = useMemo(() => {
     const m = new Map<string, string>();
     advisors.forEach((a) => m.set(a.id, a.group));
@@ -72,6 +123,32 @@ export default function CouncilView({ provider }: { provider: string }) {
     setClarifyAns({});
     setDecisionMap(null);
     setError("");
+  }
+
+  function startNewDecision() {
+    requestSerial.current += 1;
+    requestController.current?.abort();
+    requestController.current = null;
+    setQuestion("");
+    setClarifyQs(null);
+    setClarifyAns({});
+    setDecisionMap(null);
+    setTranscript([]);
+    setAgendas({});
+    setSummaries({});
+    setRound(0);
+    setActiveRound(0);
+    setPhase("idle");
+    setCloseText("");
+    setDecisionId(null);
+    setFounderInput("");
+    setParticipationMode("answer");
+    setAnswerQuestionIndex(0);
+    setError("");
+    setSessionStarted(false);
+    setPendingRound(null);
+    setRetryAttempt(null);
+    setRetryClose(false);
   }
 
   function changeDepth(next: string) {
@@ -131,86 +208,209 @@ export default function CouncilView({ provider }: { provider: string }) {
   }
 
   // --- rounds ---
-  const sendable = () =>
-    transcript.map((e) => ({ round: e.round, role: e.role, speaker_id: e.speaker_id, speaker_name: e.speaker_name, content: e.content }));
+  const summaryList = () => Object.values(summaries).sort((a, b) => a.round - b.round);
+  const sendable = (items = transcript) => items.map((e) => ({
+    round: e.round,
+    role: e.role,
+    speaker_id: e.speaker_id,
+    speaker_name: e.speaker_name,
+    content: e.content,
+    entry_id: e.entry_id,
+    reply_to_id: e.reply_to_id,
+    reply_to_name: e.reply_to_name,
+    reply_excerpt: e.reply_excerpt,
+    stance: e.stance,
+    novelty: e.novelty,
+    participation_mode: e.participation_mode,
+    delta_type: e.delta_type || "none",
+    delta: e.delta || "",
+  }));
 
-  async function runRound(idx: number) {
-    if (phase === "running" || phase === "closing") return;
+  function beginStreamRequest() {
+    requestSerial.current += 1;
+    requestController.current?.abort();
+    const controller = new AbortController();
+    requestController.current = controller;
+    return { controller, serial: requestSerial.current };
+  }
+
+  async function runRoundAttempt(attempt: RoundAttempt) {
+    if (attempt.roundIndex < 1 || attempt.roundIndex > 4) return;
+    const { controller, serial } = beginStreamRequest();
+    const isCurrent = () => requestSerial.current === serial;
+    let stagedAgenda: RoundAgenda | undefined;
+    let stagedTurns: DialogueEntry[] = [];
+    let stagedSummary: RoundSummary | undefined;
+    let donePayload: { round?: number; turns?: DialogueEntry[]; summary?: RoundSummary } | null = null;
+
     setError("");
+    setRetryAttempt(null);
+    setRetryClose(false);
+    setActiveRound(attempt.roundIndex);
     setPhase("running");
-    const prior = sendable();
+    setPendingRound({ attempt, turns: [] });
     try {
       await streamRound(
         {
-          question,
-          depth,
-          provider: provider || undefined,
-          advisor_ids: Array.from(selected),
-          background: background(),
-          transcript: prior,
-          round_index: idx,
-          include_memory: includeMemory,
+          question: attempt.question,
+          depth: attempt.depth,
+          provider: attempt.provider,
+          advisor_ids: attempt.advisorIds,
+          background: attempt.background,
+          transcript: sendable([
+            ...attempt.baseTranscript,
+            ...(attempt.founderEntry ? [attempt.founderEntry] : []),
+          ]),
+          summaries: attempt.priorSummaries,
+          participation: attempt.participation,
+          round_index: attempt.roundIndex,
+          include_memory: attempt.includeMemory,
         },
         {
-          turn: (t) => setTranscript((prev) => [...prev, t]),
-          done: (d) => setRound(d.round),
-          error: (m) => setError(m),
+          agenda: (agenda) => {
+            stagedAgenda = agenda;
+            if (isCurrent()) setPendingRound((prev) => prev ? { ...prev, agenda } : prev);
+          },
+          turn: (turn) => {
+            stagedTurns = [...stagedTurns, turn];
+            if (isCurrent()) setPendingRound((prev) => prev ? { ...prev, turns: stagedTurns } : prev);
+          },
+          roundSummary: (summary) => {
+            stagedSummary = summary;
+            if (isCurrent()) setPendingRound((prev) => prev ? { ...prev, summary } : prev);
+          },
+          done: (done) => { donePayload = done; },
         },
+        controller.signal,
       );
+      if (!isCurrent()) return;
+
+      const completed = donePayload as { round?: number; turns?: DialogueEntry[]; summary?: RoundSummary } | null;
+      const completedRound = completed?.round;
+      const committedAgenda = stagedAgenda;
+      const committedTurns = Array.isArray(completed?.turns) ? completed.turns : stagedTurns;
+      const committedSummary = completed?.summary || stagedSummary;
+      if (completedRound !== attempt.roundIndex || !committedAgenda || !committedSummary) {
+        throw new Error("本轮响应不完整，已撤回未完成内容，请重试本轮。");
+      }
+
+      setTranscript([
+        ...attempt.baseTranscript,
+        ...(attempt.founderEntry ? [attempt.founderEntry] : []),
+        ...committedTurns,
+      ]);
+      setAgendas((prev) => ({ ...prev, [attempt.roundIndex]: committedAgenda }));
+      setSummaries((prev) => ({ ...prev, [attempt.roundIndex]: committedSummary }));
+      setAnswerQuestionIndex(0);
+      setRound(attempt.roundIndex);
+      setPendingRound(null);
+      setRetryAttempt(null);
     } catch (e) {
-      setError((e as Error).message);
+      if (!isCurrent() || isAbortError(e)) return;
+      setPendingRound(null);
+      setRetryAttempt(attempt);
+      setError(`${(e as Error).message} 本轮尚未计入议事记录。`);
     } finally {
-      setPhase("idle");
+      if (isCurrent()) {
+        requestController.current = null;
+        setPhase("idle");
+        setActiveRound(0);
+      }
     }
   }
 
   function startCouncil() {
-    if (!question.trim() || !decisionMap || selected.size === 0 || phase === "running") return;
+    if (!question.trim() || !decisionMap || selected.size < 2 || phase === "running") return;
     setTranscript([]);
+    setAgendas({});
+    setSummaries({});
     setRound(0);
     setCloseText("");
     setDecisionId(null);
     setError("");
-    runRound(1);
+    setSessionStarted(true);
+    setPendingRound(null);
+    setRetryAttempt(null);
+    const attempt: RoundAttempt = {
+      roundIndex: 1,
+      participation: { mode: "listen", content: "" },
+      founderEntry: null,
+      baseTranscript: [],
+      priorSummaries: [],
+      advisorIds: Array.from(selected),
+      background: background(),
+      question,
+      depth,
+      provider: provider || undefined,
+      includeMemory,
+    };
+    void runRoundAttempt(attempt);
   }
 
-  function interjectAndContinue() {
-    const text = founderInput.trim();
-    if (!text || phase === "running") return;
+  function continueCouncil(mode: ParticipationMode) {
+    if (phase !== "idle" || round >= 4) return;
+    const typed = founderInput.trim();
+    if (mode !== "listen" && !typed) return;
+    const content = mode === "listen"
+      ? "我先旁听。请你们围绕还没有解决的分歧继续内部讨论。"
+      : typed;
+    const nextRound = round + 1;
+    const answeredQuestion = mode === "answer" ? latestSummary?.questions_for_user[answerQuestionIndex] || "" : "";
+    const participation: Participation = {
+      mode,
+      content: typed,
+      ...(answeredQuestion ? {
+        reply_to_id: `summary-r${round}-q${answerQuestionIndex}`,
+        reply_to_name: "委员会提问",
+        reply_excerpt: answeredQuestion,
+      } : {}),
+    };
     const entry: DialogueEntry = {
-      round, role: "founder", speaker_id: "founder", speaker_name: "我",
-      lineage: "", content: text, citations: [], provider: "", model: null,
+      round: nextRound, role: "founder", speaker_id: "founder", speaker_name: "我",
+      lineage: "", content, citations: [], provider: "", model: null,
+      entry_id: `founder-${Date.now()}`,
+      reply_to_id: participation.reply_to_id || "",
+      reply_to_name: participation.reply_to_name || "",
+      reply_excerpt: participation.reply_excerpt || "",
+      stance: "propose", novelty: typed ? "new" : "refined", participation_mode: mode,
+      delta_type: typed ? (mode === "add" ? "new_evidence" : mode === "focus" ? "condition" : "position_change") : "none",
+      delta: typed,
     };
     setFounderInput("");
-    setTranscript((prev) => {
-      const next = [...prev, entry];
-      // 用最新 transcript 跑下一轮
-      setTimeout(() => runRoundWith(next, round + 1), 0);
-      return next;
-    });
+    const attempt: RoundAttempt = {
+      roundIndex: nextRound,
+      participation,
+      founderEntry: entry,
+      baseTranscript: [...transcript],
+      priorSummaries: summaryList(),
+      advisorIds: Array.from(selected),
+      background: background(),
+      question,
+      depth,
+      provider: provider || undefined,
+      includeMemory,
+    };
+    void runRoundAttempt(attempt);
   }
 
-  // 用指定 transcript 跑某轮（供插话后立即带上）
-  async function runRoundWith(tr: DialogueEntry[], idx: number) {
-    if (phase === "running" || phase === "closing") return;
+  function reviseRetry() {
+    if (!retryAttempt) return;
+    if (retryAttempt.roundIndex <= 1 || round !== retryAttempt.roundIndex - 1) return;
+    setParticipationMode(retryAttempt.participation.mode);
+    setFounderInput(retryAttempt.participation.mode === "listen" ? "" : retryAttempt.participation.content);
+    setRetryAttempt(null);
     setError("");
-    setPhase("running");
-    const prior = tr.map((e) => ({ round: e.round, role: e.role, speaker_id: e.speaker_id, speaker_name: e.speaker_name, content: e.content }));
-    try {
-      await streamRound(
-        { question, depth, provider: provider || undefined, advisor_ids: Array.from(selected), background: background(), transcript: prior, round_index: idx, include_memory: includeMemory },
-        { turn: (t) => setTranscript((prev) => [...prev, t]), done: (d) => setRound(d.round), error: (m) => setError(m) },
-      );
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setPhase("idle");
-    }
   }
 
   async function closeCouncil() {
     if (phase === "running" || phase === "closing") return;
+    const { controller, serial } = beginStreamRequest();
+    const isCurrent = () => requestSerial.current === serial;
+    let stagedText = "";
+    let donePayload: { decision_id?: string; close?: DialogueEntry } | null = null;
     setError("");
+    setRetryAttempt(null);
+    setRetryClose(false);
     setPhase("closing");
     setCloseText("");
     try {
@@ -221,45 +421,78 @@ export default function CouncilView({ provider }: { provider: string }) {
           provider: provider || undefined,
           background: background(),
           transcript: sendable(),
+          summaries: summaryList(),
           decision_map: decisionMap || undefined,
           include_memory: includeMemory,
         },
         {
-          token: (tok) => setCloseText((prev) => prev + tok),
-          done: (d) => {
-            setDecisionId(d.decision_id);
-            setTranscript((prev) => [...prev, d.close]);
-            setCloseText("");
-            setPhase("closed");
+          token: (tok) => {
+            stagedText += tok;
+            if (isCurrent()) setCloseText(stagedText);
           },
-          error: (m) => {
-            setError(m);
-            setPhase("idle");
-          },
+          done: (done) => { donePayload = done; },
         },
+        controller.signal,
       );
+      if (!isCurrent()) return;
+      const completed = donePayload as { decision_id?: string; close?: DialogueEntry } | null;
+      if (!completed?.decision_id || !completed.close) {
+        throw new Error("收束响应不完整，请重试收束。");
+      }
+      setDecisionId(completed.decision_id);
+      setTranscript((prev) => [...prev, completed.close!]);
+      setCloseText("");
+      setPhase("closed");
     } catch (e) {
-      setError((e as Error).message);
+      if (!isCurrent() || isAbortError(e)) return;
+      setCloseText("");
+      setRetryClose(true);
+      setError(`${(e as Error).message} 未完成的收束内容没有写入记录。`);
       setPhase("idle");
+    } finally {
+      if (isCurrent()) requestController.current = null;
     }
   }
 
-  const started = transcript.length > 0 || phase !== "idle";
+  const started = sessionStarted;
+  const shownRounds = Array.from(new Set([
+    ...Object.keys(agendas).map(Number),
+    ...transcript.filter((entry) => entry.round > 0).map((entry) => entry.round),
+    ...(pendingRound ? [pendingRound.attempt.roundIndex] : []),
+  ])).sort((a, b) => a - b);
+  const expandedRound = activeRound || shownRounds.at(-1) || 0;
+  const latestSummary = summaries[round];
+  const canReviseRetry = Boolean(retryAttempt && retryAttempt.roundIndex > 1 && round === retryAttempt.roundIndex - 1);
+  const canParticipate = phase === "idle" && !retryAttempt && !retryClose && transcript.length > 0 && round < 4;
+  const canRequestClose = phase === "idle" && !retryAttempt && !retryClose && round === 4;
+  const showControls = phase === "running" || phase === "closing" || canParticipate || canRequestClose;
 
   return (
     <div>
-      <p className="lead">
-        从一个真实问题出发：<span className="em">先看事实，再展开选择与代价，最后观察局势如何演化</span>。
-        内阁与你一轮轮讨论，但决定始终属于你。
-      </p>
+      <h1 className="sr-only">决策内阁私董会</h1>
+      {!started ? (
+        <p className="lead">
+          从一个真实问题出发：<span className="em">先看事实，再展开选择与代价，最后观察局势如何演化</span>。
+          内阁与你一轮轮讨论，但决定始终属于你。
+        </p>
+      ) : (
+        <section className="session-topic" aria-label="本次私董会议题">
+          <div><span>本次议题</span><strong>{question}</strong></div>
+          <small>{selected.size} 位委员 · {DEPTHS.find(([key]) => key === depth)?.[1] || "标准"}讨论</small>
+        </section>
+      )}
 
-      <div className="card ask">
+      {!started && <div className="card ask">
+        <label className="sr-only" htmlFor="decision-question">你要讨论的决策</label>
         <textarea
+          id="decision-question"
           placeholder="例如：公司该直接进入新市场，还是先做小规模验证？"
           value={question}
+          maxLength={4000}
           onChange={(e) => changeQuestion(e.target.value)}
           disabled={started || mapBusy || clarifyBusy}
         />
+        {!started && <div className="input-count" aria-live="polite">{question.length} / 4000</div>}
         <div className="row between" style={{ marginTop: 12 }}>
           <div className="depth-pick">
             {DEPTHS.map(([key, label]) => (
@@ -287,10 +520,10 @@ export default function CouncilView({ provider }: { provider: string }) {
               onChange={(e) => changeMemoryConsent(e.target.checked)}
               disabled={mapBusy || clarifyBusy}
             />
-            <span>{isDemoMode ? "本轮使用浏览器本地决策档案（不会上传）" : "本轮向所选模型发送「决策档案」和最近已决/复盘记录（默认关闭）"}</span>
+            <span>{isDemoMode ? "本轮使用当前标签页的临时决策档案（不会上传，关闭标签页后清除）" : "本轮向所选模型发送「决策档案」和最近已决/复盘记录（默认关闭）"}</span>
           </label>
         )}
-      </div>
+      </div>}
 
       {!started && clarifyQs && clarifyQs.length > 0 && (
         <div className="card clarify">
@@ -298,17 +531,23 @@ export default function CouncilView({ provider }: { provider: string }) {
           <p className="muted clarify-intro">
             私董会的价值，建立在你的真实处境上——下面这些问题既是议事需要的信息，也留给你自己往深处想。答你想答的，可留空、可跳过。
           </p>
-          {clarifyQs.map((q, i) => (
-            <div className="clarify-q" key={i}>
-              <div className="cq-q">{i + 1}. {q.q}</div>
-              {q.why && <div className="cq-why">{q.why}</div>}
-              <textarea
-                value={clarifyAns[i] || ""}
-                placeholder="（你的回答，可留空）"
-                onChange={(e) => setClarifyAns((p) => ({ ...p, [i]: e.target.value }))}
-              />
-            </div>
-          ))}
+          {clarifyQs.map((q, i) => {
+            const inputId = `clarify-answer-${i}`;
+            const whyId = `clarify-why-${i}`;
+            return (
+              <div className="clarify-q" key={i}>
+                <label className="cq-q" htmlFor={inputId}>{i + 1}. {q.q}</label>
+                {q.why && <div className="cq-why" id={whyId}>{q.why}</div>}
+                <textarea
+                  id={inputId}
+                  aria-describedby={q.why ? whyId : undefined}
+                  value={clarifyAns[i] || ""}
+                  placeholder="（你的回答，可留空）"
+                  onChange={(e) => setClarifyAns((p) => ({ ...p, [i]: e.target.value }))}
+                />
+              </div>
+            );
+          })}
           <button className="primary" onClick={runMap} disabled={mapBusy}>
             {mapBusy ? "正在展开局势…" : "带着回答，展开决策地图"}
           </button>
@@ -323,76 +562,194 @@ export default function CouncilView({ provider }: { provider: string }) {
               <strong>地图不是结论。</strong>
               <span className="muted"> 它把讨论的地基、代价与可能演化摆在桌上，接下来让不同视角真正交锋。</span>
             </div>
-            <button className="primary" onClick={startCouncil} disabled={selected.size === 0}>带着地图，召开圆桌</button>
+            <button className="primary" onClick={startCouncil} disabled={selected.size < 2}>带着地图，召开圆桌</button>
           </div>
         </>
       )}
 
       {!started && <AdvisorPicker advisors={advisors} selected={selected} setSelected={setSelected} />}
 
-      {error && <div className="card error">出错了：{error}</div>}
-
-      {/* 对话流 */}
-      {transcript.length > 0 && (
-        <div className="card dialogue" ref={streamRef}>
-          <div className="dlg-head">
-            <h3 style={{ margin: 0 }}>圆桌 · 第 {Math.max(round, 1)} 轮</h3>
-            <span className="muted">{question}</span>
-          </div>
-          {transcript.map((e, i) => (
-            <DialogueBubble key={i} e={e} group={groupById.get(e.speaker_id)} />
-          ))}
-          {phase === "closing" && closeText && (
-            <div className="dlg-close">
-              <div className="dlg-speaker">主持人 · 收束</div>
-              <div className="dlg-text">{closeText}<span className="caret" /></div>
+      {error && (
+        <div className="card error stream-error" role="alert">
+          <span>出错了：{error}</span>
+          {retryAttempt && phase === "idle" && (
+            <div className="row">
+              <button className="primary" onClick={() => void runRoundAttempt(retryAttempt)}>
+                重试第 {retryAttempt.roundIndex} 轮
+              </button>
+              {canReviseRetry && <button className="ghost" onClick={reviseRetry}>修改我的参与方式</button>}
             </div>
           )}
-          {phase === "running" && <div className="progress-line">顾问们正在交锋…</div>}
+          {retryClose && phase === "idle" && (
+            <button className="primary" onClick={() => void closeCouncil()}>重试收束</button>
+          )}
         </div>
       )}
 
-      {/* 控制区 */}
-      {started && phase !== "closed" && (
-        <div className="card controls">
-          {phase === "idle" && transcript.length > 0 && (
-            <>
-              <div className="founder-say">
-                <textarea
-                  value={founderInput}
-                  placeholder="你想回应、补充、或反问内阁的话…（会带进下一轮）"
-                  onChange={(e) => setFounderInput(e.target.value)}
+      {started && (
+        <>
+          <RoundStepper completedRound={round} activeRound={activeRound} />
+          <div className="council-stage">
+            <section
+              className="council-thread"
+              role="log"
+              aria-live="polite"
+              aria-relevant="additions"
+              aria-busy={phase === "running"}
+              aria-label="私董会对话记录"
+            >
+              {shownRounds.map((roundIndex) => (
+                <RoundSection
+                  key={roundIndex}
+                  roundIndex={roundIndex}
+                  agenda={pendingRound?.attempt.roundIndex === roundIndex ? pendingRound.agenda : agendas[roundIndex]}
+                  entries={[
+                    ...transcript.filter((entry) => entry.round === roundIndex),
+                    ...(pendingRound?.attempt.roundIndex === roundIndex
+                      ? [
+                        ...(pendingRound.attempt.founderEntry ? [pendingRound.attempt.founderEntry] : []),
+                        ...pendingRound.turns,
+                      ]
+                      : []),
+                  ]}
+                  groupById={groupById}
+                  pending={pendingRound?.attempt.roundIndex === roundIndex}
+                  open={roundIndex === expandedRound}
                 />
-              </div>
-              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                {founderInput.trim() ? (
-                  <button className="primary" onClick={interjectAndContinue}>说完这句，继续深入</button>
-                ) : (
-                  <button className="primary" onClick={() => runRound(round + 1)}>继续深入（第 {round + 1} 轮）</button>
+              ))}
+              {phase === "running" && (
+                <div className="card progress-line" role="status">第 {activeRound} 轮议事中，委员正在回应彼此…</div>
+              )}
+              {phase === "closing" && closeText && (
+                <div className="dlg-close">
+                  <div className="dlg-speaker">主持人 · 收束</div>
+                  <div className="dlg-text">{closeText}<span className="caret" /></div>
+                </div>
+              )}
+            </section>
+            {phase !== "closed" && showControls && (
+              <div className="card controls">
+                {canParticipate && (
+                  <FounderParticipation
+                    mode={participationMode}
+                    setMode={setParticipationMode}
+                    value={founderInput}
+                    setValue={setFounderInput}
+                    questions={latestSummary?.questions_for_user || []}
+                    answerQuestionIndex={answerQuestionIndex}
+                    setAnswerQuestionIndex={setAnswerQuestionIndex}
+                    nextRound={round + 1}
+                    onContinue={continueCouncil}
+                    onClose={closeCouncil}
+                  />
                 )}
-                <button className="ghost" onClick={closeCouncil}>
-                  请内阁收束 · 把决定交回给我
-                </button>
+                {canRequestClose && (
+                  <div className="round-complete">
+                    <div><strong>四轮议事已完成。</strong><span className="muted"> 现在请主持人保留少数意见，把决定权交回给你。</span></div>
+                    <button className="primary" onClick={closeCouncil}>请内阁收束</button>
+                  </div>
+                )}
+                {(phase === "running" || phase === "closing") && (
+                  <div className="muted">{phase === "closing" ? "主持人正在收束…" : "议事中…"}</div>
+                )}
               </div>
-              {round < 3 && <div className="muted" style={{ marginTop: 8 }}>建议至少议 3 轮，越往后越深。也可以随时插话，把讨论带向你真正在意的地方。</div>}
-            </>
-          )}
-          {(phase === "running" || phase === "closing") && (
-            <div className="muted">{phase === "closing" ? "主持人正在收束…" : "议事中…"}</div>
-          )}
-        </div>
+            )}
+            <aside className="minutes-rail" aria-label="各轮议事纪要">
+              {summaryList().map((summary) => <RoundSummaryPanel key={summary.round} summary={summary} open={summary.round === round} />)}
+              {summaryList().length === 0 && (
+                <div className="card minutes-empty">本轮结束后，这里会出现各方观点、共识与非共识。</div>
+              )}
+            </aside>
+          </div>
+        </>
       )}
 
-      {phase === "closed" && decisionId && <ConfirmDecision decisionId={decisionId} decisionMap={decisionMap} />}
+      {phase === "closed" && decisionId && (
+        <ConfirmDecision decisionId={decisionId} decisionMap={decisionMap} onStartNew={startNewDecision} />
+      )}
     </div>
   );
 }
 
+function RoundStepper({ completedRound, activeRound }: { completedRound: number; activeRound: number }) {
+  return (
+    <ol className="round-stepper" aria-label="四轮私董会进程">
+      {ROUND_LABELS.map(([index, label]) => {
+        const state = activeRound === index ? "active" : completedRound >= index ? "done" : "upcoming";
+        return (
+          <li key={index} className={state} aria-current={activeRound === index ? "step" : undefined}>
+            <span>{completedRound >= index ? "✓" : index}</span>
+            <strong>{label}</strong>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function RoundSection({
+  roundIndex,
+  agenda,
+  entries,
+  groupById,
+  pending,
+  open,
+}: {
+  roundIndex: number;
+  agenda?: RoundAgenda;
+  entries: DialogueEntry[];
+  groupById: Map<string, string>;
+  pending?: boolean;
+  open: boolean;
+}) {
+  return (
+    <details className={`card round-section${pending ? " pending" : ""}`} open={open}>
+      <summary className="round-head">
+        <span>第 {roundIndex} 轮{pending ? " · 进行中" : ""}</span>
+        <div>
+          <h2>{agenda?.title || ROUND_LABELS[roundIndex - 1]?.[1]}</h2>
+          {agenda?.objective && <p>{agenda.objective}</p>}
+        </div>
+        <span className="round-chevron" aria-hidden="true">⌄</span>
+      </summary>
+      {agenda?.topics?.length ? (
+        <div className="round-agenda"><strong>本轮议题</strong>{agenda.topics.map((topic) => <span key={topic}>{topic}</span>)}</div>
+      ) : null}
+      <div className="dialogue">
+        {entries.map((entry) => (
+          <DialogueBubble key={entry.entry_id || `${entry.speaker_id}-${entry.content}`} e={entry} group={groupById.get(entry.speaker_id)} />
+        ))}
+      </div>
+    </details>
+  );
+}
+
+const STANCE_LABELS: Record<string, string> = {
+  propose: "提出观点", support: "支持并推进", challenge: "质疑", refine: "补充修正", abstain: "暂不新增", synthesize: "综合",
+};
+const DELTA_LABELS: Record<string, string> = {
+  claim: "新增主张",
+  new_evidence: "新增证据", counterexample: "新增反例", condition: "新增条件",
+  position_change: "立场变化", evidence_request: "证据要求",
+};
+
 function DialogueBubble({ e, group }: { e: DialogueEntry; group?: string }) {
   if (e.role === "founder") {
+    const intent = ({ answer: "回答内阁", add: "补充事实", focus: "指定争议", listen: "先旁听" } as Record<string, string>)[e.participation_mode] || "我的发言";
     return (
       <div className="dlg-row founder">
-        <div className="dlg-bubble me">{e.content}</div>
+        <div>
+          <div className="founder-intent">
+            {intent}
+            {e.participation_mode !== "listen" && <span className="stance propose">我的观点</span>}
+          </div>
+          {e.reply_to_name && (
+            <div className="founder-reply">
+              回应 {e.reply_to_name}{e.reply_excerpt ? <span>“{e.reply_excerpt}”</span> : null}
+            </div>
+          )}
+          <div className="dlg-bubble me">{e.content}</div>
+        </div>
       </div>
     );
   }
@@ -411,11 +768,143 @@ function DialogueBubble({ e, group }: { e: DialogueEntry; group?: string }) {
         <div className="dlg-speaker">
           {e.speaker_name}
           {group && <span className="dlg-tag">{group}</span>}
+          <span className={`stance ${e.stance}`}>{STANCE_LABELS[e.stance] || e.stance}</span>
         </div>
+        {e.reply_to_name && (
+          <div className="reply-link">
+            回应 {e.reply_to_name}{e.reply_excerpt ? <span>“{e.reply_excerpt}”</span> : null}
+          </div>
+        )}
         <div className="dlg-text">{e.content}</div>
+        {e.delta && e.delta_type && e.delta_type !== "none" && (
+          <div className="turn-delta">
+            <strong>{DELTA_LABELS[e.delta_type] || "本轮新增"}</strong>
+            <span>{e.delta}</span>
+          </div>
+        )}
         {e.citations.length > 0 && (
           <div className="dlg-cite">依据：{e.citations.map((c) => `《${c.title}》`).join("、")}</div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function RoundSummaryPanel({ summary, open }: { summary: RoundSummary; open: boolean }) {
+  return (
+    <details className="card minutes" open={open}>
+      <summary><span>第 {summary.round} 轮纪要</span><strong>{summary.title}</strong></summary>
+      <MinuteBlock title="讨论议题" items={summary.topics} />
+      <div className="minute-block">
+        <h4>各方观点</h4>
+        {summary.positions.map((position) => (
+          <div className="position" key={`${summary.round}-${position.speaker_id}`}>
+            <strong>{position.speaker_id === "founder" ? "我的观点" : position.speaker_name}</strong>
+            <span>{STANCE_LABELS[position.stance] || position.stance}{position.responds_to_name ? ` · 回应 ${position.responds_to_name}` : ""}</span>
+            <p>{position.claim}</p>
+          </div>
+        ))}
+      </div>
+      <MinuteBlock title={summary.round === 1 ? "小结论" : "本轮推进"} items={summary.provisional_conclusions} />
+      <MinuteBlock title="共识结论" items={summary.consensus} tone="consensus" />
+      <MinuteBlock title="非共识结论" items={summary.dissents} tone="dissent" />
+      <MinuteBlock title="想听你说" items={summary.questions_for_user} tone="question" />
+    </details>
+  );
+}
+
+function MinuteBlock({ title, items, tone = "" }: { title: string; items: string[]; tone?: string }) {
+  if (!items.length) return null;
+  return (
+    <div className={`minute-block ${tone}`}>
+      <h4>{title}</h4>
+      <ul>{items.map((item) => <li key={item}>{item}</li>)}</ul>
+    </div>
+  );
+}
+
+function FounderParticipation({
+  mode, setMode, value, setValue, questions, answerQuestionIndex, setAnswerQuestionIndex,
+  nextRound, onContinue, onClose,
+}: {
+  mode: ParticipationMode;
+  setMode: (mode: ParticipationMode) => void;
+  value: string;
+  setValue: (value: string) => void;
+  questions: string[];
+  answerQuestionIndex: number;
+  setAnswerQuestionIndex: (index: number) => void;
+  nextRound: number;
+  onContinue: (mode: ParticipationMode) => void;
+  onClose: () => void;
+}) {
+  const question = questions[answerQuestionIndex] || "";
+  const actions: [ParticipationMode, string, string][] = [
+    ["answer", "回答内阁", "回应他们刚才问你的问题"],
+    ["add", "补充事实", "加入他们还不知道的信息"],
+    ["focus", "指定争议", "要求下一轮围绕一个冲突深入"],
+    ["listen", "先旁听", "不补充，让委员内部继续交锋"],
+  ];
+  const placeholder = {
+    answer: question || "你对本轮提问的回答…",
+    add: "补充新的事实、数字、约束或你的判断…",
+    focus: "下一轮我希望你们重点争论的是…",
+    listen: "",
+  }[mode];
+  return (
+    <div className="participation">
+      <div className="participation-head">
+        <div><span>轮到你</span><strong>你可以说，也可以只听</strong></div>
+        {question && (
+          <blockquote>
+            {mode === "answer" && questions.length > 1 ? (
+              <label>
+                <span>选择要回答的问题</span>
+                <select
+                  value={answerQuestionIndex}
+                  onChange={(event) => setAnswerQuestionIndex(Number(event.target.value))}
+                >
+                  {questions.map((item, index) => <option key={`${index}-${item}`} value={index}>{item}</option>)}
+                </select>
+              </label>
+            ) : question}
+          </blockquote>
+        )}
+      </div>
+      <fieldset className="participation-actions">
+        <legend className="sr-only">选择参与方式</legend>
+        {actions.map(([key, label, description]) => (
+          <label key={key} className={mode === key ? "active" : ""}>
+            <input
+              type="radio"
+              name={`round-${nextRound}-participation`}
+              value={key}
+              checked={mode === key}
+              onChange={() => setMode(key)}
+            />
+            <span className="participation-option">
+              <strong>{label}</strong><span>{description}</span>
+            </span>
+          </label>
+        ))}
+      </fieldset>
+      {mode !== "listen" && (
+        <div className="founder-say">
+          <label className="sr-only" htmlFor="founder-input">你的发言</label>
+          <textarea
+            id="founder-input"
+            value={value}
+            maxLength={4000}
+            placeholder={placeholder}
+            onChange={(event) => setValue(event.target.value)}
+          />
+        </div>
+      )}
+      <div className="participation-submit">
+        <button className="primary" onClick={() => onContinue(mode)} disabled={mode !== "listen" && !value.trim()}>
+          {mode === "listen" ? `旁听第 ${nextRound} 轮` : `带着这句话进入第 ${nextRound} 轮`}
+        </button>
+        <button className="ghost" onClick={onClose}>现在收束</button>
       </div>
     </div>
   );
@@ -475,13 +964,19 @@ function AdvisorPicker({
           <button onClick={() => setSelected(new Set())}>清空</button>
         </div>
       </div>
-      <div className="roster-groups">
+      <div className="roster-groups" aria-label="按领域选择参会顾问">
         {groups.map(({ group, items }) => {
           const on = items.filter((a) => selected.has(a.id)).length;
           const cls = on === items.length ? "rg-label full" : on > 0 ? "rg-label part" : "rg-label";
           return (
             <div className="roster-group" key={group}>
-              <button className={cls} onClick={() => toggleGroup(items)} title="点一下整组加入 / 移出">
+              <button
+                className={cls}
+                onClick={() => toggleGroup(items)}
+                title="点一下整组加入 / 移出"
+                aria-pressed={on === items.length}
+                aria-label={`${group}，已选 ${on} 位，共 ${items.length} 位`}
+              >
                 {group}
                 <span className="rg-count">{on}/{items.length}</span>
               </button>
@@ -492,6 +987,7 @@ function AdvisorPicker({
                     className={selected.has(a.id) ? "rchip on" : "rchip"}
                     onClick={() => toggle(a.id)}
                     title={`${a.lineage}\n${a.core_insight}`}
+                    aria-pressed={selected.has(a.id)}
                   >
                     {a.name}
                   </button>
@@ -501,7 +997,7 @@ function AdvisorPicker({
           );
         })}
       </div>
-      <div className="roster-hint muted">{isDemoMode ? "在线 Demo 使用内置演示回应，不调用外部模型；每轮最多 16 位。" : "每位每轮都会调用一次模型。为控制成本与上下文，每轮最多 16 位；少而精往往议得更深。"}</div>
+      <div className="roster-hint muted">{isDemoMode ? "至少选择 2 位、每轮最多 16 位。在线 Demo 使用内置演示回应，不调用外部模型。" : "至少选择 2 位、每轮最多 16 位。每位每轮都会调用一次模型；少而精往往议得更深。"}</div>
     </div>
   );
 }
@@ -618,7 +1114,15 @@ function decisionMapText(map: DecisionMap): string {
   ].join("\n");
 }
 
-function ConfirmDecision({ decisionId, decisionMap }: { decisionId: string; decisionMap: DecisionMap | null }) {
+function ConfirmDecision({
+  decisionId,
+  decisionMap,
+  onStartNew,
+}: {
+  decisionId: string;
+  decisionMap: DecisionMap | null;
+  onStartNew: () => void;
+}) {
   const [chosen, setChosen] = useState("");
   const [rationale, setRationale] = useState("");
   const [expectation, setExpectation] = useState(() => decisionExpectation(decisionMap));
@@ -646,26 +1150,31 @@ function ConfirmDecision({ decisionId, decisionMap }: { decisionId: string; deci
     }
   }
 
-  if (saved) return <div className="card muted">已存入决策日志 ✓（这是你自己的决定，可在「决策日志」里复盘）</div>;
+  if (saved) return (
+    <div className="card decision-saved">
+      <span>已存入决策日志 ✓（这是你自己的决定，可在「决策日志」里复盘）</span>
+      <button className="primary" onClick={onStartNew}>开始一个新决策</button>
+    </div>
+  );
   return (
     <div className="card">
       <h3>现在，轮到你 · 把你的决定定下来</h3>
       <p className="muted" style={{ marginTop: -4, marginBottom: 12 }}>内阁只负责引你看清，决定是你的。写下你此刻的抉择。</p>
       <div className="form-field">
-        <label>我的决定</label>
-        <input value={chosen} onChange={(e) => setChosen(e.target.value)} placeholder="例如：先用一个可逆试验验证需求，再决定是否全面投入" />
+        <label htmlFor="decision-chosen">我的决定</label>
+        <input id="decision-chosen" value={chosen} onChange={(e) => setChosen(e.target.value)} placeholder="例如：先用一个可逆试验验证需求，再决定是否全面投入" />
       </div>
       <div className="form-field">
-        <label>我这样定的理由</label>
-        <textarea value={rationale} onChange={(e) => setRationale(e.target.value)} placeholder="是什么让你落到这个决定" />
+        <label htmlFor="decision-rationale">我这样定的理由</label>
+        <textarea id="decision-rationale" value={rationale} onChange={(e) => setRationale(e.target.value)} placeholder="是什么让你落到这个决定" />
       </div>
       <div className="form-field">
-        <label>预期、待验证证据与停止条件</label>
-        <textarea value={expectation} onChange={(e) => setExpectation(e.target.value)} placeholder="什么证据说明方向正确？什么条件出现时停止、退出或回滚？" />
+        <label htmlFor="decision-expectation">预期、待验证证据与停止条件</label>
+        <textarea id="decision-expectation" value={expectation} onChange={(e) => setExpectation(e.target.value)} placeholder="什么证据说明方向正确？什么条件出现时停止、退出或回滚？" />
       </div>
       <div className="form-field">
-        <label>标签（逗号分隔）</label>
-        <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="市场进入, 可逆试验" />
+        <label htmlFor="decision-tags">标签（逗号分隔）</label>
+        <input id="decision-tags" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="市场进入, 可逆试验" />
       </div>
       <button className="primary" onClick={save} disabled={busy || !chosen.trim()}>
         {busy ? "保存中…" : "记下我的决定"}

@@ -1,0 +1,20 @@
+{
+  "name": "decision-cabinet",
+  "version": "0.4.0",
+  "description": "A stateless MCP decision council for choices, costs, debate, and scenario evolution.",
+  "author": {
+    "name": "Decision Cabinet contributors",
+    "url": "https://github.com/joyozhang333-lgtm"
+  },
+  "homepage": "https://joyozhang333-lgtm.github.io/decision-cabinet/demo/",
+  "repository": "https://github.com/joyozhang333-lgtm/decision-cabinet",
+  "license": "MIT",
+  "keywords": [
+    "decision-support",
+    "mcp",
+    "advisory-council",
+    "scenario-planning"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

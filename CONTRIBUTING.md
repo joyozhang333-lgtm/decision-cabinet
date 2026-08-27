@@ -12,7 +12,9 @@ pytest -q
 
 cd web
 npm ci
+npm test
 npm run build
+npm run build:demo
 ```
 
 ## 新增知识卡

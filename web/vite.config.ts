@@ -29,7 +29,7 @@ export default defineConfig(({ mode }) => {
                   name: "决策内阁 · Decision Cabinet",
                   applicationCategory: "BusinessApplication",
                   operatingSystem: "Web",
-                  softwareVersion: "0.3.0",
+                  softwareVersion: "0.4.0",
                   url: "https://joyozhang333-lgtm.github.io/decision-cabinet/demo/",
                   offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
                   description: "开源 AI 决策支持系统在线演示，帮助用户看清事实、选择、代价、风险与局势演化。",

@@ -1,20 +1,22 @@
 import { useEffect, useState } from "react";
 import { getConfig, getUiApiKey, ProductConfig, setUiApiKey } from "./api";
-import { isDemoMode } from "./demoApi";
+import { clearDemoSessionData, isDemoMode } from "./demoApi";
 import CouncilView from "./views/CouncilView";
 import ChatView from "./views/ChatView";
 import DecisionsView from "./views/DecisionsView";
 import OrgMemoryView from "./views/OrgMemoryView";
 import KnowledgeView from "./views/KnowledgeView";
+import IntegrationsView from "./views/IntegrationsView";
 
-type Tab = "council" | "knowledge" | "chat" | "decisions" | "org";
+type Tab = "council" | "integrations" | "knowledge" | "chat" | "decisions" | "org";
 
-const TABS: [Tab, string][] = [
-  ["council", "圆桌"],
-  ["knowledge", "知识地图"],
-  ["chat", "单聊"],
-  ["decisions", "决策日志"],
-  ["org", "决策档案"],
+const TABS: [Tab, string, string][] = [
+  ["council", "私董会", "私董会"],
+  ["integrations", "接入中心", "接入"],
+  ["knowledge", "知识地图", "知识"],
+  ["chat", "单聊", "单聊"],
+  ["decisions", "决策日志", "日志"],
+  ["org", "决策档案", "档案"],
 ];
 
 export default function App() {
@@ -36,14 +38,17 @@ export default function App() {
         <div className="brand">
           决策内阁<span className="en">DECISION CABINET</span>
         </div>
-        <nav className="tabs">
-          {TABS.map(([key, label]) => (
+        <nav className="tabs" aria-label="主导航">
+          {TABS.map(([key, label, shortLabel]) => (
             <button
               key={key}
               className={tab === key ? "tab active" : "tab"}
               onClick={() => setTab(key)}
+              aria-current={tab === key ? "page" : undefined}
+              aria-label={label}
             >
-              {label}
+              <span className="tab-long">{label}</span>
+              <span className="tab-short" aria-hidden="true">{shortLabel}</span>
             </button>
           ))}
         </nav>
@@ -80,12 +85,18 @@ export default function App() {
       </header>
       {isDemoMode && (
         <div className="demo-banner">
-          <span><b>在线体验版</b>：内置演示回应，数据只保存在当前浏览器，不调用外部模型。</span>
-          <a href="https://github.com/joyozhang333-lgtm/decision-cabinet">获取完整开源版</a>
+          <span><b>在线体验版</b>：内置演示回应，数据只保存在当前标签页会话，不调用外部模型。</span>
+          <div>
+            <button onClick={() => { clearDemoSessionData(); window.location.reload(); }}>清除本页数据</button>
+            <a href="https://github.com/joyozhang333-lgtm/decision-cabinet">获取完整开源版</a>
+          </div>
         </div>
       )}
       <main className="container">
-        {tab === "council" && <CouncilView provider={provider} />}
+        <section hidden={tab !== "council"} aria-label="私董会">
+          <CouncilView provider={provider} />
+        </section>
+        {tab === "integrations" && <IntegrationsView />}
         {tab === "knowledge" && <KnowledgeView />}
         {tab === "chat" && <ChatView provider={provider} />}
         {tab === "decisions" && <DecisionsView />}

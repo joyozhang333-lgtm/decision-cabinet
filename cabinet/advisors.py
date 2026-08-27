@@ -59,8 +59,14 @@ def load_all_advisors() -> tuple[Advisor, ...]:
 
 @lru_cache(maxsize=128)
 def load_advisor(advisor_id: str) -> Advisor:
+    # Advisor IDs cross API and MCP trust boundaries.  Treat the packaged index
+    # as the allowlist before constructing a path so values such as "../x"
+    # can never escape the advisor resource directory.
+    if advisor_id not in advisor_ids():
+        raise AdvisorNotFoundError(advisor_id)
     path = ADVISORS_DIR / f"{advisor_id}.md"
-    if not path.exists():
+    resolved_path = path.resolve()
+    if resolved_path.parent != ADVISORS_DIR.resolve() or not resolved_path.is_file():
         raise AdvisorNotFoundError(advisor_id)
     title, sections = _parse_markdown_sections(path, advisor_id)
     category = _join(sections.get("类别", [])).strip().lower() or "expert"

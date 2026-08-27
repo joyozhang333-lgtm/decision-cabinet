@@ -32,9 +32,43 @@ export interface DecisionMap {
 export interface ClarifyQuestion { q: string; why: string }
 export interface ClarifyAnswer { q: string; a: string }
 export interface Citation { kind: string; code: string; title: string; path: string }
+export type DeltaType =
+  | "claim"
+  | "new_evidence"
+  | "counterexample"
+  | "condition"
+  | "position_change"
+  | "evidence_request"
+  | "none";
 export interface DialogueEntry {
   round: number; role: string; speaker_id: string; speaker_name: string;
   lineage: string; content: string; citations: Citation[]; provider: string; model: string | null;
+  entry_id: string; reply_to_id: string; reply_to_name: string; reply_excerpt: string;
+  stance: "propose" | "support" | "challenge" | "refine" | "abstain" | "synthesize";
+  novelty: "new" | "refined" | "low"; participation_mode: ParticipationMode | "";
+  delta_type?: DeltaType;
+  delta?: string;
+}
+export type ParticipationMode = "answer" | "add" | "focus" | "listen";
+export interface Participation {
+  mode: ParticipationMode;
+  content: string;
+  reply_to_id?: string;
+  reply_to_name?: string;
+  reply_excerpt?: string;
+}
+export interface RoundAgenda {
+  round: number; phase: "facts" | "debate" | "stress_test" | "convergence";
+  title: string; objective: string; topics: string[]; opening_speaker_id: string;
+}
+export interface CouncilPosition {
+  speaker_id: string; speaker_name: string; claim: string; stance: string;
+  responds_to_name: string; responds_to_id: string; role: "advisor" | "founder";
+}
+export interface RoundSummary {
+  round: number; phase: RoundAgenda["phase"]; title: string; topics: string[];
+  positions: CouncilPosition[]; provisional_conclusions: string[]; consensus: string[];
+  dissents: string[]; questions_for_user: string[]; next_round_focus: string[]; created_at_utc: string;
 }
 export interface AdvisorTurn {
   advisor_id: string; advisor_name: string; category: string; lineage: string;
@@ -175,17 +209,25 @@ export function categoryLabel(cat: string): string {
 
 // 多轮圆桌：SSE over POST（fetch 流式读取，支持较大的 transcript 请求体）
 export interface RoundStreamHandlers {
+  agenda?: (agenda: RoundAgenda) => void;
   turn?: (t: DialogueEntry) => void;
+  roundSummary?: (summary: RoundSummary) => void;
   token?: (tok: string) => void;
   done?: (d: any) => void;
   error?: (msg: string) => void;
 }
 
-async function postStream(url: string, body: unknown, on: RoundStreamHandlers): Promise<void> {
+async function postStream(
+  url: string,
+  body: unknown,
+  on: RoundStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
   const res = await fetch(url, {
     method: "POST",
     headers: apiHeaders(true),
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok || !res.body) {
     const message = "请求失败（" + res.status + "）";
@@ -197,33 +239,40 @@ async function postStream(url: string, body: unknown, on: RoundStreamHandlers): 
   let buf = "";
   let terminal = false;
   let streamError = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buf.indexOf("\n\n")) >= 0) {
-      const block = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      let ev = "";
-      let data = "";
-      for (const line of block.split("\n")) {
-        if (line.startsWith("event:")) ev = line.slice(6).trim();
-        else if (line.startsWith("data:")) data = line.slice(5).trim();
-      }
-      if (!ev) continue;
-      const parsed = data ? JSON.parse(data) : null;
-      if (ev === "turn") on.turn?.(parsed as DialogueEntry);
-      else if (ev === "token") on.token?.(parsed as string);
-      else if (ev === "done") {
-        terminal = true;
-        on.done?.(parsed);
-      } else if (ev === "error") {
-        terminal = true;
-        streamError = (parsed && parsed.message) || "出错了";
-        on.error?.(streamError);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        let ev = "";
+        const dataLines: string[] = [];
+        for (const line of block.split("\n")) {
+          if (line.startsWith("event:")) ev = line.slice(6).trim();
+          else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+        }
+        if (!ev) continue;
+        const data = dataLines.join("\n");
+        const parsed = data ? JSON.parse(data) : null;
+        if (ev === "agenda") on.agenda?.(parsed as RoundAgenda);
+        else if (ev === "turn") on.turn?.(parsed as DialogueEntry);
+        else if (ev === "round_summary") on.roundSummary?.(parsed as RoundSummary);
+        else if (ev === "token") on.token?.(parsed as string);
+        else if (ev === "done") {
+          terminal = true;
+          on.done?.(parsed);
+        } else if (ev === "error") {
+          terminal = true;
+          streamError = (parsed && parsed.message) || "出错了";
+          on.error?.(streamError);
+        }
       }
     }
+  } finally {
+    reader.releaseLock();
   }
   if (streamError) throw new Error(streamError);
   if (!terminal) {
@@ -235,14 +284,15 @@ async function postStream(url: string, body: unknown, on: RoundStreamHandlers): 
 
 export interface RoundBody {
   question: string; depth: string; provider?: string; advisor_ids?: string[];
-  background?: string; transcript: unknown[]; round_index: number; include_memory?: boolean;
+  background?: string; transcript: unknown[]; summaries: RoundSummary[]; round_index: number;
+  participation: Participation; include_memory?: boolean;
 }
 export interface CloseBody {
   question: string; depth: string; provider?: string; background?: string; transcript: unknown[];
-  decision_map?: DecisionMap; include_memory?: boolean;
+  summaries: RoundSummary[]; decision_map?: DecisionMap; include_memory?: boolean;
 }
 
-export const streamRound = (body: RoundBody, on: RoundStreamHandlers) =>
-  postStream("/api/council/round", body, on);
-export const streamClose = (body: CloseBody, on: RoundStreamHandlers) =>
-  postStream("/api/council/close", body, on);
+export const streamRound = (body: RoundBody, on: RoundStreamHandlers, signal?: AbortSignal) =>
+  postStream("/api/council/round", body, on, signal);
+export const streamClose = (body: CloseBody, on: RoundStreamHandlers, signal?: AbortSignal) =>
+  postStream("/api/council/close", body, on, signal);

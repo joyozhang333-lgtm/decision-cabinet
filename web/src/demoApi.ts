@@ -6,7 +6,10 @@ import type {
   FactSheet,
   KnowledgeCard,
   OrgMemory,
+  Participation,
   ProductConfig,
+  RoundAgenda,
+  RoundSummary,
 } from "./api";
 
 export const isDemoMode = import.meta.env.MODE === "demo";
@@ -27,6 +30,11 @@ let payload: DemoPayload | null = null;
 
 export async function installDemoApi(): Promise<void> {
   if (!isDemoMode || installed) return;
+  // v0.3 stored demo-only drafts in origin-wide localStorage. GitHub Pages
+  // projects share an origin, so remove those legacy keys and keep v0.4 data
+  // in this tab's sessionStorage instead.
+  window.localStorage.removeItem(DECISIONS_KEY);
+  window.localStorage.removeItem(ORG_KEY);
   const nativeFetch = window.fetch.bind(window);
   const dataResponse = await nativeFetch(`${import.meta.env.BASE_URL}demo-data.json`);
   if (!dataResponse.ok) throw new Error("在线 Demo 数据加载失败，请刷新后重试。");
@@ -41,9 +49,17 @@ export async function installDemoApi(): Promise<void> {
   };
 }
 
+export function clearDemoSessionData(): void {
+  window.sessionStorage.removeItem(DECISIONS_KEY);
+  window.sessionStorage.removeItem(ORG_KEY);
+  window.localStorage.removeItem(DECISIONS_KEY);
+  window.localStorage.removeItem(ORG_KEY);
+}
+
 async function handleDemoRequest(url: URL, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   if (!payload) return json({ detail: { message: "Demo 尚未初始化。" } }, 503);
   const method = (init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
+  const signal = init?.signal || (input instanceof Request ? input.signal : undefined);
   const body = await parseBody(input, init);
   const path = url.pathname;
 
@@ -57,8 +73,8 @@ async function handleDemoRequest(url: URL, input: RequestInfo | URL, init?: Requ
   if (method === "POST" && path === "/api/council/clarify") return json({ questions: clarify(String(body.question || ""), Boolean(body.include_memory)) });
   if (method === "POST" && path === "/api/council/factsheet") return json(buildFactSheet(String(body.question || "")));
   if (method === "POST" && path === "/api/decision/map") return json(buildDecisionMap(String(body.question || ""), Boolean(body.include_memory)));
-  if (method === "POST" && path === "/api/council/round") return councilRound(body);
-  if (method === "POST" && path === "/api/council/close") return councilClose(body);
+  if (method === "POST" && path === "/api/council/round") return councilRound(body, signal);
+  if (method === "POST" && path === "/api/council/close") return councilClose(body, signal);
   if (method === "POST" && /\/api\/advisors\/[^/]+\/chat$/.test(path)) return advisorChat(path, body);
   if (method === "GET" && path === "/api/decisions") return listDecisions(url);
   if (method === "PATCH" && path.startsWith("/api/decisions/")) return patchDecision(path, body);
@@ -184,27 +200,88 @@ function generalOptions() {
   ];
 }
 
-function councilRound(body: Record<string, unknown>): Response {
+function councilRound(body: Record<string, unknown>, signal?: AbortSignal): Response {
   const question = String(body.question || "这个决定");
-  const round = Number(body.round_index || 1);
+  const round = Math.max(1, Math.min(4, Number(body.round_index || 1)));
   const requested = Array.isArray(body.advisor_ids) ? body.advisor_ids.map(String) : [];
-  const transcript = Array.isArray(body.transcript) ? body.transcript : [];
-  const founderFollowup = [...transcript].reverse().find((item) => (
-    item && typeof item === "object" && (item as Record<string, unknown>).role === "founder"
+  const transcript = Array.isArray(body.transcript) ? body.transcript.filter(isRecord) : [];
+  const summaries = Array.isArray(body.summaries) ? body.summaries.filter(isRoundSummary) : [];
+  const participation = isRecord(body.participation)
+    ? {
+      mode: String(body.participation.mode || "listen"),
+      content: String(body.participation.content || ""),
+      reply_to_id: String(body.participation.reply_to_id || ""),
+      reply_to_name: String(body.participation.reply_to_name || ""),
+      reply_excerpt: String(body.participation.reply_excerpt || ""),
+    } as Participation
+    : { mode: "listen", content: "" } as Participation;
+  const agenda = demoAgenda(round, summaries, participation);
+  const selected = (requested.length ? requested : payload!.advisors.slice(0, 8).map((item) => item.id)).slice(0, 16);
+  const shift = (round - 1) % Math.max(selected.length, 1);
+  const ids = [...selected.slice(shift), ...selected.slice(0, shift)];
+  agenda.opening_speaker_id = ids[0] || "";
+  const working = [...transcript];
+  const turns: DialogueEntry[] = [];
+  const founderTarget = participation.mode === "listen" ? undefined : [...transcript].reverse().find((item) => (
+    item.role === "founder"
+    && String(item.participation_mode || "") !== "listen"
+    && String(item.content || "").trim()
   ));
-  const followup = founderFollowup && typeof founderFollowup === "object"
-    ? String((founderFollowup as Record<string, unknown>).content || "")
-    : "";
-  const ids = (requested.length ? requested : payload!.advisors.slice(0, 8).map((item) => item.id)).slice(0, 16);
-  const turns = ids.map((id) => buildTurn(id, question, round, followup, Boolean(body.include_memory)));
-  const events = turns.map((turn) => event("turn", turn));
-  events.push(event("done", { round, turns }));
-  return sse(events.join(""));
+  ids.forEach((id, index) => {
+    const target = index === 0 && founderTarget
+      ? founderTarget
+      : [...working].reverse().find((item) => item.role === "advisor" && item.speaker_id !== id);
+    const turn = buildTurn(id, question, round, participation, target, index, Boolean(body.include_memory));
+    turns.push(turn);
+    working.push(turn as unknown as Record<string, unknown>);
+  });
+  const summary = demoSummary(round, agenda, turns, participation, founderTarget);
+  const events = [event("agenda", agenda), ...turns.map((turn) => event("turn", turn)), event("round_summary", summary)];
+  events.push(event("done", { round, turns, summary, next_action: round === 4 ? "close" : "participate_or_listen" }));
+  return sseSequence(events, signal);
 }
 
-function buildTurn(id: string, question: string, round: number, followup = "", includeMemory = false): DialogueEntry {
+export function demoAgenda(round: number, summaries: RoundSummary[], participation: Participation): RoundAgenda {
+  const last = summaries.at(-1);
+  const phases: Record<number, Pick<RoundAgenda, "phase" | "title" | "objective">> = {
+    1: { phase: "facts", title: "事实定界与初步立场", objective: "把事实与推断分开，形成小结论、共识和非共识。" },
+    2: { phase: "debate", title: "聚焦争议与观点交锋", objective: "围绕上一轮未解决的分歧，让支持与反对意见直接回应。" },
+    3: { phase: "stress_test", title: "代价、反证与局势演化", objective: "检验最坏情景、二阶效应和改变立场的信号。" },
+    4: { phase: "convergence", title: "条件式收束与少数意见", objective: "说明什么条件下选什么，同时保留少数意见和停止条件。" },
+  };
+  const previousDissents = last?.dissents.slice(0, 2) || [];
+  const topics = round === 1
+    ? ["区分已核实事实、推断与未知", "各方给出初步立场", "形成小结论、共识与非共识"]
+    : round === 2
+      ? (previousDissents.length > 0
+        ? previousDissents.map((item) => `争议：${item}`)
+        : ["争议：现在行动还是先验证", "争议：机会窗口是否足以覆盖承载代价"])
+      : round === 3
+        ? ["最坏情景与不可逆代价", "二阶效应与阴阳反转", "什么证据会让各方改变立场"]
+        : ["条件式建议与少数意见", "下一步证据和行动", "停止、退出与复盘条件"];
+  if (participation.mode === "focus" && participation.content) topics.unshift(`用户指定争议：${short(participation.content)}`);
+  if (participation.mode === "answer" && participation.content) topics.unshift(`核对用户回答：${short(participation.content)}`);
+  if (participation.mode === "add" && participation.content) topics.unshift(`检验用户补充：${short(participation.content)}`);
+  return { round, ...phases[round], topics: topics.slice(0, 5), opening_speaker_id: "" };
+}
+
+function buildTurn(
+  id: string,
+  question: string,
+  round: number,
+  participation: Participation,
+  target: Record<string, unknown> | undefined,
+  index: number,
+  includeMemory = false,
+): DialogueEntry {
   const advisor = payload!.advisors.find((item) => item.id === id) || payload!.advisors[0];
-  const content = advisorMessage(id, question, round, followup, includeMemory);
+  const replyName = target ? String(target.speaker_name || "") : "";
+  const replyRole = target ? String(target.role || "advisor") : "";
+  const replyExcerpt = target ? short(String(target.content || "")) : "";
+  const stanceCycles = round === 2 ? ["challenge", "refine", "support"] : ["refine", "challenge", "support"];
+  const stance = replyName ? stanceCycles[index % stanceCycles.length] as DialogueEntry["stance"] : "propose";
+  const content = advisorMessage(id, question, round, participation, replyName, stance, includeMemory, replyRole);
+  const delta = advisorDelta(id, round);
   const firstCanon = advisor.canon[0];
   return {
     round,
@@ -216,42 +293,200 @@ function buildTurn(id: string, question: string, round: number, followup = "", i
     citations: firstCanon ? [{ kind: "method", code: advisor.id, title: firstCanon.title, path: firstCanon.path }] : [],
     provider: "browser-demo",
     model: null,
+    entry_id: makeId("turn"),
+    reply_to_id: target ? String(target.entry_id || "") : "",
+    reply_to_name: replyName,
+    reply_excerpt: replyExcerpt,
+    stance,
+    novelty: round === 1 ? "new" : "refined",
+    participation_mode: "",
+    delta_type: delta.type,
+    delta: delta.text,
   };
 }
 
-function advisorMessage(id: string, question: string, round: number, followup = "", includeMemory = false): string {
-  const prefix = followup
-    ? `你刚才补充了“${short(followup)}”。我顺着这一点再往下追一层。`
-    : round > 1
-      ? "顺着前一轮的张力，我再往下追一层。"
-      : "先别急着选。";
+function advisorMessage(
+  id: string,
+  question: string,
+  round: number,
+  participation: Participation = { mode: "listen", content: "" },
+  replyName = "",
+  stance: DialogueEntry["stance"] = "propose",
+  includeMemory = false,
+  replyRole = "",
+): string {
+  const stanceVerb = stance === "challenge" ? "要质疑" : stance === "support" ? "支持并推进" : "想补充修正";
+  const relation = replyRole === "founder"
+    ? "我先直接回应你的观点："
+    : replyName
+      ? `我${stanceVerb}${replyName}的判断：`
+    : "我先把自己的判断摆出来。";
   const memory = includeMemory ? memoryContext() : "";
   const memorySuffix = memory ? ` 同时要守住你本地档案里的边界：${memory}。` : "";
-  const messages: Record<string, string> = {
-    analyst: `${prefix} 关于“${short(question)}”，请先列出三栏：已核实事实、推断、还不知道。最危险的不是不知道，而是把推断当事实。`,
-    "investment-analyst": `${prefix} 如果这是投资问题，先把标的放回整个组合。写清数据时点、原始披露、仓位上限和论点失效条件，再谈收益。`,
-    munger: `${prefix} 反过来想：什么情形会让这个决定失败，而且失败后很难恢复？先避开毁灭性结果，再讨论上行空间。`,
-    drucker: `${prefix} 这个动作要产生的外部成果是什么？如果四周后只有更多活动、没有可验证成果，就不算进展。`,
-    laozi: `${prefix} 继续增加控制和投入，在哪个点会反过来损伤承载力？知止不是退缩，是不让局面被自己的力量压坏。`,
-    huineng: `${prefix} 看看你是否已经执著于某个答案，再去选择性寻找证据。先把“我必须证明自己是对的”放下，事实会更清楚。`,
-    jung: `${prefix} 你最不愿承认的恐惧是什么？它可能正以“理性分析”的样子参与决策。把阴影说出来，判断才完整。`,
-    inamori: `${prefix} 这个选择的动机，除了自己的得失，是否也经得起对客户、团队和长期信任的检验？`,
+  const lenses: Record<string, string> = {
+    analyst: "把已核实事实、推断和未知分开，不能拿叙事冒充证据",
+    "investment-analyst": "把标的放回整个组合，并写清数据时点、仓位上限与论点失效条件",
+    munger: "反过来找会造成永久损失、且难以恢复的失败路径",
+    drucker: "先定义四周后能在客户或结果端看到的外部成果",
+    laozi: "观察投入和控制在哪个阈值后会反过来损伤承载力",
+    huineng: "放下必须证明自己正确的执著，检查是否在选择性寻找证据",
+    jung: "说出藏在理性分析背后的恐惧、投射与身份需求",
+    inamori: "检验动机是否经得起客户、团队和长期信任的考验",
   };
-  return (messages[id] || `${prefix} 从${payload!.advisors.find((item) => item.id === id)?.core_insight || "这个方法视角"}来看，先写清所得、代价、反证和停止条件，再决定是否加码。`) + memorySuffix;
+  const lens = lenses[id] || `从${payload!.advisors.find((item) => item.id === id)?.core_insight || "这个方法视角"}检查所得、代价与停止条件`;
+  const phaseMessage = {
+    1: `${relation} 关于“${short(question)}”，我先主张${lens}。眼下最小的可推进结论，是先承认哪些信息还没有被核实。`,
+    2: `${relation}分歧不在“要不要认真”，而在证据不足时该承担多大承诺。我的立场是${lens}；请下一位说明，什么事实足以证明现在就该加码。`,
+    3: `${relation}现在不再重复方向，我只做压力测试：假设判断错了，${lens}。请把会提前出现的失败信号和可回滚动作写出来。`,
+    4: `${relation}我的最终意见是条件式的：只有关键证据达到门槛才推进，同时要${lens}。若触发停止条件，我支持退出；这项少数意见应保留。`,
+  }[round];
+  return phaseMessage + memorySuffix;
 }
 
-function councilClose(body: Record<string, unknown>): Response {
+function advisorDelta(id: string, round: number): { type: NonNullable<DialogueEntry["delta_type"]>; text: string } {
+  const additions: Record<string, string> = {
+    analyst: "把事实、推断和未知分别编号，下一轮只争论仍会改变选择的未知。",
+    "investment-analyst": "增加仓位上限、数据时点和论点失效条件三项可核验门槛。",
+    munger: "新增一条永久损失路径，并要求先证明它可被预算上限截断。",
+    drucker: "把抽象目标改写为四周内能在客户或结果端观察到的外部成果。",
+    laozi: "新增承载阈值：投入越过阈值后，原本的优势会反转成负担。",
+    huineng: "新增反证检查：是否只接受能证明自己原先正确的信息。",
+    jung: "把身份需要和现实目标拆开，防止用理性语言包装恐惧。",
+    inamori: "新增长期信任条件：即使短期有效，也不能把代价转嫁给客户或团队。",
+  };
+  const typeByRound: Record<number, NonNullable<DialogueEntry["delta_type"]>> = {
+    1: "new_evidence", 2: "counterexample", 3: "condition", 4: "position_change",
+  };
+  const base = additions[id] || "新增一个可核验条件，并说明它会如何改变当前选择。";
+  const roundText: Record<number, string> = {
+    1: `初步主张：${base}`,
+    2: `交锋推进：${base} 这会改变“现在行动还是继续验证”的判断。`,
+    3: `压力测试：把“${short(base)}”改写成可观察阈值，未达到就不继续加码。`,
+    4: `条件式结论：只有“${short(base)}”得到验证才推进，否则保留选择权并执行停止条件。`,
+  };
+  return {
+    type: typeByRound[round] || "evidence_request",
+    text: roundText[round] || base,
+  };
+}
+
+function demoSummary(
+  round: number,
+  agenda: RoundAgenda,
+  turns: DialogueEntry[],
+  participation: Participation,
+  founder?: Record<string, unknown>,
+): RoundSummary {
+  const positions = [
+    ...(founder ? [{
+      speaker_id: "founder",
+      speaker_name: "我的观点",
+      claim: short(String(founder.content || "")),
+      stance: "propose",
+      responds_to_name: String(founder.reply_to_name || ""),
+      responds_to_id: String(founder.reply_to_id || ""),
+      role: "founder" as const,
+    }] : []),
+    ...turns.map((turn) => ({
+      speaker_id: turn.speaker_id,
+      speaker_name: turn.speaker_name,
+      claim: short(turn.content),
+      stance: turn.stance,
+      responds_to_name: turn.reply_to_name,
+      responds_to_id: turn.reply_to_id,
+      role: "advisor" as const,
+    })),
+  ];
+  const names = turns.map((turn) => turn.speaker_name);
+  const namedDissents = turns
+    .filter((turn) => turn.stance === "challenge")
+    .slice(0, 2)
+    .map((turn) => `${turn.speaker_name}提出质疑：${short(turn.delta || turn.content)}`);
+  const namedAlternatives = turns
+    .filter((turn) => turn.stance === "support" || turn.stance === "refine")
+    .slice(0, 2)
+    .map((turn) => `${turn.speaker_name}${turn.stance === "support" ? "支持推进" : "补充修正"}：${short(turn.delta || turn.content)}`);
+  const participationNote = participation.mode === "listen" || !participation.content
+    ? "本轮用户选择旁听，委员会必须依靠既有分歧继续推进。"
+    : `委员会已把用户的${({ answer: "回答", add: "补充", focus: "指定争议" } as Record<string, string>)[participation.mode] || "发言"}“${short(participation.content)}”纳入议题。`;
+  const turnConclusions = turns.slice(0, 3).map((turn) => `${turn.speaker_name}：${short(turn.delta || turn.content)}`);
+  const allContent = {
+    1: {
+      conclusions: turnConclusions,
+      consensus: [`${names.join("、")}都同意先区分事实、推断与未知。`, "任何推进都应写下证据门槛与停止条件。"],
+      dissents: [...namedDissents, ...namedAlternatives],
+      questions: ["在这些初步判断里，哪一条忽略了你的真实处境？"],
+      next: ["把“现在行动还是先验证”收窄为可直接交锋的议题。"],
+    },
+    2: {
+      conclusions: [participationNote, ...turnConclusions.slice(0, 2)],
+      consensus: [`${names.join("、")}都承认等待有机会成本、行动有承载代价，两者都要显性化。`],
+      dissents: [...namedDissents, ...namedAlternatives],
+      questions: ["你最愿意承担哪一种代价，又绝不能承担哪一种？"],
+      next: ["用最坏情景、二阶效应和反证压力测试这两组立场。"],
+    },
+    3: {
+      conclusions: [participationNote, ...turnConclusions.slice(0, 2)],
+      consensus: [`${names.join("、")}都要求预先写下失败信号、复盘日期和可回滚动作。`],
+      dissents: [...namedDissents, ...namedAlternatives],
+      questions: ["什么证据一出现，你会改变现在的倾向或立即停下？"],
+      next: ["形成条件式建议，并把少数意见与停止条件留在最终纪要里。"],
+    },
+    4: {
+      conclusions: [participationNote, ...turnConclusions.slice(0, 2)],
+      consensus: [`${names.join("、")}都同意最终结论必须带适用条件与停止条件。`, "最终决定属于用户，委员会只提供条件与边界。"],
+      dissents: [...namedDissents, ...namedAlternatives],
+      questions: ["你最终选择什么，并愿意亲自承担哪一项代价？"],
+      next: ["记录选择、证据、停止条件和复盘时间。"],
+    },
+  };
+  const content = allContent[round as keyof typeof allContent] || allContent[1];
+  const dissents = content.dissents.length > 0
+    ? content.dissents
+    : [turns.length < 2 ? "只有一个顾问视角，无法形成真正的观点交锋。" : "本轮暂未形成明确反对意见，下一轮需主动指定反方压力测试。"];
+  return {
+    round,
+    phase: agenda.phase,
+    title: agenda.title,
+    topics: agenda.topics,
+    positions,
+    provisional_conclusions: content.conclusions,
+    consensus: content.consensus,
+    dissents,
+    questions_for_user: content.questions,
+    next_round_focus: content.next,
+    created_at_utc: now(),
+  };
+}
+
+function councilClose(body: Record<string, unknown>, signal?: AbortSignal): Response {
   const question = String(body.question || "这个决定");
   const map = (body.decision_map || buildDecisionMap(question)) as DecisionMap;
   const text = "这场讨论真正留下的，不是一个标准答案，而是一个张力：你既想抓住机会，也想保留不被一次判断锁死的空间。现在请你只回答三件事：最想守住什么，愿意付出什么代价，什么证据出现时会停下或改变。把这三件事写清，决定就应该由你亲自做。";
   const decision = newDecision(question, map, text);
-  writeDecisions([decision, ...readDecisions().filter((item) => item.id !== decision.id)]);
+  const transcript = Array.isArray(body.transcript) ? body.transcript.filter(isRecord) : [];
+  const finalRound = Math.max(1, ...transcript.map((item) => Number(item.round || 0)));
   const close: DialogueEntry = {
-    round: Number(body.round_index || 1), role: "facilitator", speaker_id: "facilitator",
+    round: finalRound, role: "facilitator", speaker_id: "facilitator",
     speaker_name: "主持人", lineage: "决策内阁", content: text, citations: [],
     provider: "browser-demo", model: null,
+    entry_id: makeId("close"), reply_to_id: "", reply_to_name: "", reply_excerpt: "",
+    stance: "synthesize", novelty: "refined", participation_mode: "",
   };
-  return sse(event("token", text) + event("done", { close, decision_id: decision.id }));
+  const splitAt = Math.ceil(text.length / 3);
+  const tokens = [text.slice(0, splitAt), text.slice(splitAt, splitAt * 2), text.slice(splitAt * 2)]
+    .filter(Boolean)
+    .map((chunk) => event("token", chunk));
+  return sseSequence(
+    [...tokens, event("done", { close, decision_id: decision.id })],
+    signal,
+    90,
+    (index) => {
+      if (index === tokens.length) {
+        writeDecisions([decision, ...readDecisions().filter((item) => item.id !== decision.id)]);
+      }
+    },
+  );
 }
 
 function advisorChat(path: string, body: Record<string, unknown>): Response {
@@ -260,7 +495,15 @@ function advisorChat(path: string, body: Record<string, unknown>): Response {
   const advisor = payload!.advisors.find((item) => item.id === id) || payload!.advisors[0];
   return json({
     session_id: String(body.session_id || makeId("chat")), advisor_id: advisor.id,
-    answer: advisorMessage(advisor.id, question, body.session_id ? 2 : 1, "", Boolean(body.include_memory)),
+    answer: advisorMessage(
+      advisor.id,
+      question,
+      body.session_id ? 2 : 1,
+      { mode: "listen", content: "" },
+      "",
+      "propose",
+      Boolean(body.include_memory),
+    ),
     provider: "browser-demo", model: null,
     citations: advisor.canon[0] ? [{ kind: "method", code: advisor.id, title: advisor.canon[0].title, path: advisor.canon[0].path }] : [],
   });
@@ -327,7 +570,7 @@ function memoryContext(): string {
 
 function saveOrg(body: Record<string, unknown>): Response {
   const org = { ...readOrg(), ...body, updated_at_utc: now() } as OrgMemory;
-  localStorage.setItem(ORG_KEY, JSON.stringify(org));
+  sessionStorage.setItem(ORG_KEY, JSON.stringify(org));
   return json(org);
 }
 
@@ -336,12 +579,12 @@ function readDecisions(): Decision[] {
 }
 
 function writeDecisions(decisions: Decision[]) {
-  localStorage.setItem(DECISIONS_KEY, JSON.stringify(decisions.slice(0, 100)));
+  sessionStorage.setItem(DECISIONS_KEY, JSON.stringify(decisions.slice(0, 100)));
 }
 
 function readLocal<T>(key: string, fallback: T): T {
   try {
-    const value = localStorage.getItem(key);
+    const value = sessionStorage.getItem(key);
     return value ? JSON.parse(value) as T : fallback;
   } catch {
     return fallback;
@@ -365,18 +608,71 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
-function sse(value: string): Response {
+function sseSequence(
+  values: string[],
+  signal?: AbortSignal,
+  delayMs = 140,
+  beforeEnqueue?: (index: number) => void,
+): Response {
+  let index = 0;
   const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
+    async pull(controller) {
+      if (signal?.aborted) {
+        controller.error(new DOMException("请求已取消", "AbortError"));
+        return;
+      }
+      if (index > 0) {
+        try {
+          await abortableDelay(delayMs, signal);
+        } catch (error) {
+          controller.error(error);
+          return;
+        }
+      }
+      if (signal?.aborted) {
+        controller.error(new DOMException("请求已取消", "AbortError"));
+        return;
+      }
+      const value = values[index];
+      if (value === undefined) {
+        controller.close();
+        return;
+      }
+      beforeEnqueue?.(index);
       controller.enqueue(encoder.encode(value));
-      controller.close();
+      index += 1;
+      if (index >= values.length) controller.close();
     },
   });
   return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
 }
 
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new DOMException("请求已取消", "AbortError"));
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(new DOMException("请求已取消", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function event(name: string, value: unknown): string {
   return `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isRoundSummary(value: unknown): value is RoundSummary {
+  return isRecord(value) && typeof value.round === "number" && Array.isArray(value.dissents);
 }
 
 function isInvestment(question: string): boolean {
