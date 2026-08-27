@@ -10,6 +10,9 @@
 - 新增默认只读、无状态的 MCP server，以及 Codex、Claude Code、DeepSeek Harness、Hugging Face Tiny Agents 和 ML Claw/OpenClaw 的 plugin 或配置入口。
 - 明确接入成熟度与边界：DeepSeek Harness 仍属 developer preview；Tiny Agents 与 ML Claw/OpenClaw 分开接入；WorkBuddy 与 CodeBuddy 不同，且远程 Connector 仍需 HTTPS 与鉴权，GitHub Pages Demo 不是远程后端。
 - 在线 Demo 改为标签页级 `sessionStorage`，清理旧版 origin-wide Demo 键并提供一键清除，避免 GitHub Pages 同源项目读取长期留存的演示输入。
+- 加固本地私有 API：同时校验 loopback 或显式配置的 Host、精确 Origin 与远程访问密钥，阻断 DNS rebinding；顾问资源 ID 也只允许读取打包白名单。
+- 统一顾问发言、逐轮纪要、请求与模型上下文预算；新增 16 位顾问连续四轮极限回归，保证一轮成功输出可以继续进入后续轮次和最终收束。
+- 新增前端状态机、Demo 隐私、MCP stdio/HTTP 握手与恶意路径/来源回归测试；CI 会运行 Python、Vitest、完整前端与静态 Demo 构建。
 - 更新中英文 README、产品页、产品定义、架构说明和接入指南，并保留原有隐私、金融风险与最终决定权声明。
 
 ## 0.3.0 — 2026-08-25
