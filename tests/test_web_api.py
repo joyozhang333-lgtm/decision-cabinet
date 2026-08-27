@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.responses import Response
 
-from cabinet import web_api
+from cabinet import council, web_api
 from cabinet.providers import ProviderAnswer
 from cabinet.store import CabinetStore
 from conftest import FakeProvider
@@ -19,7 +19,7 @@ from conftest import FakeProvider
 def client(monkeypatch):
     monkeypatch.setattr(web_api, "get_provider", lambda name=None: FakeProvider())
     store = CabinetStore(":memory:")
-    return TestClient(web_api.create_app(store))
+    return TestClient(web_api.create_app(store), base_url="http://127.0.0.1")
 
 
 def test_health_and_config(client: TestClient) -> None:
@@ -206,7 +206,7 @@ def test_cancelled_close_does_not_persist_unconfirmed_draft(monkeypatch) -> None
         return Response(status_code=204)
 
     monkeypatch.setattr(web_api, "_sse_response", capture_producer)
-    client = TestClient(web_api.create_app(store))
+    client = TestClient(web_api.create_app(store), base_url="http://127.0.0.1")
     response = client.post(
         "/api/council/close",
         json={"question": "是否进入新市场？", "transcript": []},
@@ -230,7 +230,7 @@ def test_sse_response_emits_heartbeat_while_provider_is_slow() -> None:
 
         return web_api._sse_response(produce, heartbeat_seconds=0.005)
 
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
         with client.stream("GET", "/stream") as response:
             body = "".join(response.iter_text())
 
@@ -276,7 +276,10 @@ def test_org_memory_get_put(client: TestClient) -> None:
 def test_external_model_memory_is_opt_in(monkeypatch) -> None:
     provider = FakeProvider()
     monkeypatch.setattr(web_api, "get_provider", lambda name=None: provider)
-    client = TestClient(web_api.create_app(CabinetStore(":memory:")))
+    client = TestClient(
+        web_api.create_app(CabinetStore(":memory:")),
+        base_url="http://127.0.0.1",
+    )
     client.put(
         "/api/org-memory",
         json={
@@ -322,10 +325,14 @@ def test_private_ui_api_blocks_cross_site_and_untrusted_remote_clients(monkeypat
     monkeypatch.setattr(web_api, "get_provider", lambda name=None: FakeProvider())
     monkeypatch.delenv("CABINET_UI_API_KEY", raising=False)
     app = web_api.create_app(CabinetStore(":memory:"))
-    local = TestClient(app)
+    local = TestClient(app, base_url="http://127.0.0.1")
     assert local.get("/api/org-memory", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
 
-    remote = TestClient(app, client=("203.0.113.10", 50000))
+    remote = TestClient(
+        app,
+        base_url="http://127.0.0.1",
+        client=("203.0.113.10", 50000),
+    )
     assert remote.get("/api/org-memory").status_code == 403
     monkeypatch.setenv("CABINET_UI_API_KEY", "remote-secret")
     assert remote.get("/api/org-memory").status_code == 401
@@ -339,7 +346,10 @@ def test_private_ui_api_only_trusts_exact_browser_origins(monkeypatch) -> None:
     monkeypatch.setattr(web_api, "get_provider", lambda name=None: FakeProvider())
     monkeypatch.delenv("CABINET_UI_API_KEY", raising=False)
     monkeypatch.delenv("CABINET_UI_ORIGINS", raising=False)
-    local = TestClient(web_api.create_app(CabinetStore(":memory:")))
+    local = TestClient(
+        web_api.create_app(CabinetStore(":memory:")),
+        base_url="http://127.0.0.1",
+    )
 
     allowed = local.get("/api/org-memory", headers={"Origin": "http://localhost:5173"})
     assert allowed.status_code == 200
@@ -351,17 +361,48 @@ def test_private_ui_api_only_trusts_exact_browser_origins(monkeypatch) -> None:
     assert "access-control-allow-origin" not in untrusted.headers
 
     monkeypatch.setenv("CABINET_UI_ORIGINS", "https://cabinet.example.com")
-    configured = TestClient(web_api.create_app(CabinetStore(":memory:")))
-    trusted = configured.get("/api/org-memory", headers={"Origin": "https://cabinet.example.com"})
+    monkeypatch.setenv("CABINET_UI_API_KEY", "configured-secret")
+    configured = TestClient(
+        web_api.create_app(CabinetStore(":memory:")),
+        base_url="https://cabinet.example.com",
+    )
+    trusted = configured.get(
+        "/api/org-memory",
+        headers={"Origin": "https://cabinet.example.com", "X-API-Key": "configured-secret"},
+    )
     assert trusted.status_code == 200
     assert trusted.headers["access-control-allow-origin"] == "https://cabinet.example.com"
+
+
+def test_private_ui_api_rejects_dns_rebinding_host_even_when_origin_matches(monkeypatch) -> None:
+    monkeypatch.setattr(web_api, "get_provider", lambda name=None: FakeProvider())
+    monkeypatch.delenv("CABINET_UI_API_KEY", raising=False)
+    monkeypatch.delenv("CABINET_UI_ORIGINS", raising=False)
+    rebound = TestClient(
+        web_api.create_app(CabinetStore(":memory:")),
+        base_url="http://rebind.example:8000",
+    )
+
+    same_origin = rebound.get(
+        "/api/org-memory",
+        headers={"Origin": "http://rebind.example:8000", "Sec-Fetch-Site": "same-origin"},
+    )
+    assert same_origin.status_code == 403
+    assert same_origin.json()["detail"]["code"] == "untrusted_host"
+
+    no_origin = rebound.get("/api/decisions")
+    assert no_origin.status_code == 403
+    assert no_origin.json()["detail"]["code"] == "untrusted_host"
 
 
 def test_external_key_does_not_break_local_ui(monkeypatch) -> None:
     monkeypatch.setattr(web_api, "get_provider", lambda name=None: FakeProvider())
     monkeypatch.setenv("CABINET_EXTERNAL_API_KEY", "external-only")
     monkeypatch.delenv("CABINET_UI_API_KEY", raising=False)
-    local = TestClient(web_api.create_app(CabinetStore(":memory:")))
+    local = TestClient(
+        web_api.create_app(CabinetStore(":memory:")),
+        base_url="http://127.0.0.1",
+    )
     assert local.get("/api/org-memory").status_code == 200
 
 
@@ -369,8 +410,12 @@ def test_untrusted_forwarded_header_cannot_spoof_loopback(monkeypatch) -> None:
     monkeypatch.setattr(web_api, "get_provider", lambda name=None: FakeProvider())
     monkeypatch.delenv("CABINET_UI_API_KEY", raising=False)
     app = web_api.create_app(CabinetStore(":memory:"))
-    local = TestClient(app)
-    remote = TestClient(app, client=("203.0.113.10", 50000))
+    local = TestClient(app, base_url="http://127.0.0.1")
+    remote = TestClient(
+        app,
+        base_url="http://127.0.0.1",
+        client=("203.0.113.10", 50000),
+    )
     assert local.get("/api/org-memory", headers={"X-Forwarded-For": "203.0.113.20"}).status_code == 403
     assert remote.get("/api/org-memory", headers={"X-Forwarded-For": "127.0.0.1"}).status_code == 403
 
@@ -389,7 +434,7 @@ def test_council_request_cost_budgets_are_enforced(client: TestClient) -> None:
 
     oversized_transcript = [
         {"role": "advisor", "speaker_name": "a", "content": "x" * 4000}
-        for _ in range(21)
+        for _ in range(81)
     ]
     oversized = client.post(
         "/api/council/round",
@@ -483,7 +528,31 @@ def test_active_participation_becomes_first_reply_target_and_position(client: Te
     assert founder["responds_to_id"] == "munger-r1"
 
 
+_MAX_ADVISOR_IDS = [
+    "analyst",
+    "investment-analyst",
+    "munger",
+    "drucker",
+    "growth-strategist",
+    "jung",
+    "laozi",
+    "huineng",
+    "inamori",
+    "rogers",
+    "zhuangzi",
+    "kongzi",
+    "shakyamuni",
+    "padmasambhava",
+    "trungpa",
+    "wangyangming",
+]
+
+
 class _OversizedProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.turn_count = 0
+
     def complete(self, messages, *, temperature=None, max_tokens=2000, stream_handler=None):
         self.calls.append(messages)
         user = next((message["content"] for message in reversed(messages) if message["role"] == "user"), "")
@@ -494,7 +563,10 @@ class _OversizedProvider(FakeProvider):
                     "## 本轮小结论",
                     *[f"- {long_item}{index}" for index in range(20)],
                     "## 各方观点",
-                    f"analyst | propose | | {'主张' * 1500}",
+                    *[
+                        f"{advisor_id} | propose | | {'主张' * 1500}"
+                        for advisor_id in _MAX_ADVISOR_IDS
+                    ],
                     "## 共识结论",
                     *[f"- {long_item}{index}" for index in range(20)],
                     "## 非共识结论",
@@ -506,12 +578,14 @@ class _OversizedProvider(FakeProvider):
                 ]
             )
         else:
+            self.turn_count += 1
+            marker = chr(0x4E00 + self.turn_count)
             text = json.dumps(
                 {
-                    "speech": "答" * 5001,
+                    "speech": marker * 5001,
                     "stance": "propose",
                     "delta_type": "new_evidence",
-                    "delta": "新增证据" * 150,
+                    "delta": (marker + "新增证据") * 150,
                 },
                 ensure_ascii=False,
             )
@@ -521,15 +595,18 @@ class _OversizedProvider(FakeProvider):
 def test_oversized_sse_output_is_normalized_and_refeed_safe(monkeypatch) -> None:
     provider = _OversizedProvider()
     monkeypatch.setattr(web_api, "get_provider", lambda name=None: provider)
-    client = TestClient(web_api.create_app(CabinetStore(":memory:")))
+    client = TestClient(
+        web_api.create_app(CabinetStore(":memory:")),
+        base_url="http://127.0.0.1",
+    )
     first = client.post(
         "/api/council/round",
         json={"question": "是否扩张？", "advisor_ids": ["analyst"], "round_index": 1},
     )
     assert first.status_code == 200
     done1 = _sse_payload(first, "done")
-    assert len(done1["turns"][0]["content"]) <= 4000
-    assert len(done1["turns"][0]["delta"]) <= 500
+    assert len(done1["turns"][0]["content"]) <= council.MAX_ADVISOR_TURN_CHARS
+    assert len(done1["turns"][0]["delta"]) <= council.MAX_SUMMARY_ITEM_CHARS
     summary = done1["summary"]
     for field, max_items in {
         "provisional_conclusions": 12,
@@ -539,8 +616,8 @@ def test_oversized_sse_output_is_normalized_and_refeed_safe(monkeypatch) -> None
         "next_round_focus": 8,
     }.items():
         assert len(summary[field]) <= max_items
-        assert all(len(item) <= 500 for item in summary[field])
-    assert all(len(position["claim"]) <= 2000 for position in summary["positions"])
+        assert all(len(item) <= council.MAX_SUMMARY_ITEM_CHARS for item in summary[field])
+    assert all(len(position["claim"]) <= council.MAX_POSITION_CLAIM_CHARS for position in summary["positions"])
 
     second = client.post(
         "/api/council/round",
@@ -554,6 +631,50 @@ def test_oversized_sse_output_is_normalized_and_refeed_safe(monkeypatch) -> None
         },
     )
     assert second.status_code == 200
+
+
+def test_max_advisor_outputs_remain_reusable_through_all_four_rounds(monkeypatch) -> None:
+    provider = _OversizedProvider()
+    monkeypatch.setattr(web_api, "get_provider", lambda name=None: provider)
+    client = TestClient(
+        web_api.create_app(CabinetStore(":memory:")),
+        base_url="http://127.0.0.1",
+    )
+    transcript: list[dict] = []
+    summaries: list[dict] = []
+
+    for round_index in range(1, 5):
+        response = client.post(
+            "/api/council/round",
+            json={
+                "question": "是否扩张？",
+                "advisor_ids": _MAX_ADVISOR_IDS,
+                "round_index": round_index,
+                "transcript": transcript,
+                "summaries": summaries,
+                "participation": {"mode": "listen", "content": ""},
+            },
+        )
+        assert response.status_code == 200, response.text[:500]
+        done = _sse_payload(response, "done")
+        assert len(done["turns"]) == len(_MAX_ADVISOR_IDS)
+        transcript.extend(done["turns"])
+        summaries.append(done["summary"])
+
+    close = client.post(
+        "/api/council/close",
+        json={
+            "question": "是否扩张？",
+            "transcript": transcript,
+            "summaries": summaries,
+        },
+    )
+    assert close.status_code == 200, close.text[:500]
+    assert _sse_payload(close, "done")["decision_id"]
+    assert max(
+        sum(len(message["content"]) for message in call)
+        for call in provider.calls
+    ) < 140_000
 
 
 def test_round_order_and_transcript_identity_are_validated(client: TestClient) -> None:
@@ -580,7 +701,10 @@ def test_sse_error_hides_internal_exception_text(monkeypatch) -> None:
             raise RuntimeError("SECRET_INTERNAL_PATH=/private/example")
 
     monkeypatch.setattr(web_api, "get_provider", lambda name=None: ExplodingProvider())
-    client = TestClient(web_api.create_app(CabinetStore(":memory:")))
+    client = TestClient(
+        web_api.create_app(CabinetStore(":memory:")),
+        base_url="http://127.0.0.1",
+    )
     response = client.post(
         "/api/council/round",
         json={"question": "x", "advisor_ids": ["analyst"], "round_index": 1},

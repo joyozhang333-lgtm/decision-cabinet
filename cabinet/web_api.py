@@ -9,6 +9,7 @@ import os
 import queue
 import threading
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -31,6 +32,7 @@ _DEFAULT_UI_ORIGINS = (
     "http://127.0.0.1:5173",
 )
 _SSE_HEARTBEAT_SECONDS = 15.0
+MAX_COUNCIL_REQUEST_CONTEXT_CHARS = 320_000
 
 
 # --- 请求模型 -----------------------------------------------------------
@@ -214,8 +216,15 @@ class RoundRequest(BaseModel):
         if summary_rounds != expected_rounds:
             raise ValueError(f"第 {self.round_index} 轮必须携带按顺序完成的前序纪要：{expected_rounds}。")
         summary_size = sum(len(item.model_dump_json()) for item in self.summaries)
-        if len(self.background) + sum(len(item.content) for item in self.transcript) + summary_size > 80000:
-            raise ValueError("圆桌背景与对话总长度不得超过 80000 字符。")
+        if (
+            len(self.background)
+            + sum(len(item.content) for item in self.transcript)
+            + summary_size
+            > MAX_COUNCIL_REQUEST_CONTEXT_CHARS
+        ):
+            raise ValueError(
+                f"圆桌背景、对话与纪要总长度不得超过 {MAX_COUNCIL_REQUEST_CONTEXT_CHARS} 字符。"
+            )
         return self
 
 
@@ -235,8 +244,15 @@ class CloseRequest(BaseModel):
         if summary_rounds and summary_rounds != list(range(1, max(summary_rounds) + 1)):
             raise ValueError("收束前的各轮纪要必须从第 1 轮开始、按顺序且不重复。")
         summary_size = sum(len(item.model_dump_json()) for item in self.summaries)
-        if len(self.background) + sum(len(item.content) for item in self.transcript) + summary_size > 80000:
-            raise ValueError("收束背景与对话总长度不得超过 80000 字符。")
+        if (
+            len(self.background)
+            + sum(len(item.content) for item in self.transcript)
+            + summary_size
+            > MAX_COUNCIL_REQUEST_CONTEXT_CHARS
+        ):
+            raise ValueError(
+                f"收束背景、对话与纪要总长度不得超过 {MAX_COUNCIL_REQUEST_CONTEXT_CHARS} 字符。"
+            )
         return self
 
 
@@ -314,9 +330,19 @@ def create_app(store: CabinetStore | None = None) -> FastAPI:
                 status_code=403,
                 content={"detail": {"code": "cross_site_blocked", "message": "拒绝跨站访问本地决策数据。"}},
             )
+        host_header = request.headers.get("host", "")
+        if not _is_trusted_ui_host(host_header, request.url.scheme, allowed_ui_origins):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": {"code": "untrusted_host", "message": "这个 Host 未获准访问本地决策数据。"}},
+            )
         origin = request.headers.get("origin", "").rstrip("/")
-        host_origin = f"{request.url.scheme}://{request.headers.get('host', '')}".rstrip("/")
-        if origin and origin != host_origin and origin not in allowed_ui_origins:
+        if origin and not _is_trusted_ui_origin(
+            origin,
+            allowed_ui_origins,
+            request_host=host_header,
+            request_scheme=request.url.scheme,
+        ):
             return JSONResponse(
                 status_code=403,
                 content={"detail": {"code": "untrusted_origin", "message": "这个网页来源未获准访问本地决策数据。"}},
@@ -331,7 +357,7 @@ def create_app(store: CabinetStore | None = None) -> FastAPI:
                     status_code=401,
                     content={"detail": {"code": "invalid_api_key", "message": "访问需要有效的 X-API-Key。"}},
                 )
-        elif forwarded or not _is_loopback_client(host):
+        elif forwarded or not _is_loopback_authority(host_header, request.url.scheme) or not _is_loopback_client(host):
             return JSONResponse(
                 status_code=403,
                 content={"detail": {"code": "remote_ui_disabled", "message": "私有 UI API 默认仅允许本机访问。"}},
@@ -737,18 +763,120 @@ def context_env(key: str) -> str | None:
     return _env_with_dotenv().get(key)
 
 
+def _default_port(scheme: str) -> int | None:
+    return {"http": 80, "https": 443}.get(scheme.casefold())
+
+
+def _origin_key(value: str) -> tuple[str, str, int | None] | None:
+    """Parse a path-free HTTP(S) origin into a canonical comparison key."""
+    try:
+        parsed = urlsplit(value.strip())
+        port = parsed.port
+    except ValueError:
+        return None
+    scheme = parsed.scheme.casefold()
+    host = (parsed.hostname or "").casefold()
+    if (
+        scheme not in {"http", "https"}
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    return scheme, host, port or _default_port(scheme)
+
+
+def _canonical_origin(value: str) -> str | None:
+    key = _origin_key(value)
+    if key is None:
+        return None
+    scheme, host, effective_port = key
+    rendered_host = f"[{host}]" if ":" in host else host
+    port = "" if effective_port == _default_port(scheme) else f":{effective_port}"
+    return f"{scheme}://{rendered_host}{port}"
+
+
+def _authority_key(value: str, scheme: str) -> tuple[str, str, int | None] | None:
+    candidate = value.strip()
+    if not candidate:
+        return None
+    try:
+        parsed = urlsplit(f"{scheme}://{candidate}")
+        port = parsed.port
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").casefold()
+    normalized_scheme = scheme.casefold()
+    if (
+        normalized_scheme not in {"http", "https"}
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    return normalized_scheme, host, port or _default_port(normalized_scheme)
+
+
+def _is_loopback_hostname(host: str) -> bool:
+    if host.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_loopback_authority(value: str, scheme: str) -> bool:
+    key = _authority_key(value, scheme)
+    return bool(key and _is_loopback_hostname(key[1]))
+
+
+def _is_trusted_ui_host(value: str, scheme: str, allowed_origins: tuple[str, ...]) -> bool:
+    key = _authority_key(value, scheme)
+    if key is None:
+        return False
+    if _is_loopback_hostname(key[1]):
+        return True
+    return key in {_origin_key(origin) for origin in allowed_origins}
+
+
+def _is_trusted_ui_origin(
+    value: str,
+    allowed_origins: tuple[str, ...],
+    *,
+    request_host: str = "",
+    request_scheme: str = "http",
+) -> bool:
+    key = _origin_key(value)
+    if key is None:
+        return False
+    if key in {_origin_key(origin) for origin in allowed_origins}:
+        return True
+    request_key = _authority_key(request_host, request_scheme)
+    return bool(
+        request_key
+        and _is_loopback_hostname(key[1])
+        and _is_loopback_hostname(request_key[1])
+        and key == request_key
+    )
+
+
 def _allowed_ui_origins() -> tuple[str, ...]:
-    """Return exact browser origins trusted to call the private local UI API."""
+    """Return normalized exact browser origins trusted by CORS and host checks."""
     configured = os.environ.get("CABINET_UI_ORIGINS") or context_env("CABINET_UI_ORIGINS") or ""
-    extras = (
-        item.strip().rstrip("/")
-        for item in configured.split(",")
+    candidates = (*_DEFAULT_UI_ORIGINS, *(item.strip() for item in configured.split(",")))
+    normalized = (
+        _canonical_origin(item)
+        for item in candidates
+        if item and "*" not in item
     )
-    safe_extras = (
-        item for item in extras
-        if item.startswith(("http://", "https://")) and "*" not in item
-    )
-    return tuple(dict.fromkeys((*_DEFAULT_UI_ORIGINS, *safe_extras)))
+    return tuple(dict.fromkeys(item for item in normalized if item is not None))
 
 
 def _memory_for_request(store: CabinetStore, include_memory: bool) -> tuple[OrgMemory, tuple]:

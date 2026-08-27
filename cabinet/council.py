@@ -41,9 +41,12 @@ StreamHandler = Callable[[str], None]
 
 MAX_ROUND_ADVISORS = 16
 MAX_TRANSCRIPT_CONTENT_CHARS = 4_000
-MAX_SUMMARY_ITEM_CHARS = 500
-MAX_POSITION_CLAIM_CHARS = 2_000
+MAX_ADVISOR_TURN_CHARS = 1_200
+MAX_SUMMARY_ITEM_CHARS = 400
+MAX_POSITION_CLAIM_CHARS = 800
 MAX_CLOSE_CONTENT_CHARS = 12_000
+MAX_MODEL_TRANSCRIPT_CHARS = 48_000
+MAX_MODEL_SUMMARY_CHARS = 24_000
 DEFAULT_ROUND_ADVISOR_IDS: tuple[str, ...] = (
     "analyst",
     "investment-analyst",
@@ -716,7 +719,36 @@ def build_round_agenda(
     )
 
 
-def _format_transcript(transcript: list[dict], *, include_ids: bool = False) -> str:
+def _recent_rows_within_budget(rows: list[str], max_chars: int, omitted_notice: str) -> str:
+    """Keep the newest complete rows while bounding model context cost."""
+    if not rows:
+        return ""
+    joined = "\n\n".join(rows)
+    if len(joined) <= max_chars:
+        return joined
+    kept: list[str] = []
+    used = len(omitted_notice) + 2
+    for row in reversed(rows):
+        separator = 2 if kept else 0
+        remaining = max_chars - used - separator
+        if remaining <= 0:
+            break
+        if len(row) > remaining:
+            if not kept:
+                kept.append(_bounded_text(row, remaining))
+            break
+        kept.append(row)
+        used += separator + len(row)
+    kept.reverse()
+    return "\n\n".join((omitted_notice, *kept))
+
+
+def _format_transcript(
+    transcript: list[dict],
+    *,
+    include_ids: bool = False,
+    max_chars: int = MAX_MODEL_TRANSCRIPT_CHARS,
+) -> str:
     rows: list[str] = []
     for e in transcript:
         round_index = int(e.get("round") or 0)
@@ -741,10 +773,18 @@ def _format_transcript(transcript: list[dict], *, include_ids: bool = False) -> 
                     f"【entry_id={entry_id}；speaker_id={speaker_id}；reply_to_id={reply_to_id}】"
                 )
             rows.append(f"{round_tag}{identifiers}{tag}{name}{relation}：{content}")
-    return "\n\n".join(rows)
+    return _recent_rows_within_budget(
+        rows,
+        max_chars,
+        "（较早的逐字发言已省略；其结论与分歧保留在结构化纪要中。）",
+    )
 
 
-def _format_round_summaries(summaries: Iterable[object]) -> str:
+def _format_round_summaries(
+    summaries: Iterable[object],
+    *,
+    max_chars: int = MAX_MODEL_SUMMARY_CHARS,
+) -> str:
     rows: list[str] = []
     for raw in summaries:
         item = _mapping(raw)
@@ -760,7 +800,11 @@ def _format_round_summaries(summaries: Iterable[object]) -> str:
                 )
             )
         )
-    return "\n\n".join(rows)
+    return _recent_rows_within_budget(
+        rows,
+        max_chars,
+        "（较早纪要已压缩；优先保留最近轮次的共识、非共识与焦点。）",
+    )
 
 
 def _reply_target(
@@ -951,7 +995,7 @@ def _turn_retry_reasons(
     reasons: list[str] = []
     if not speech.strip():
         reasons.append("empty")
-    if len(speech) > MAX_TRANSCRIPT_CONTENT_CHARS:
+    if len(speech) > MAX_ADVISOR_TURN_CHARS:
         reasons.append("too_long")
     if _is_repetitive(speech, advisor_id, transcript) or _copies_current_round(speech, round_index, transcript):
         reasons.append("repetitive")
@@ -1039,7 +1083,7 @@ def run_round(
                     retry_messages[-1]["content"] += (
                         "\n\n上一份输出未通过议事契约，原因：" + "、".join(reasons) + "。只允许再答一次："
                         "必须使用要求的 JSON；明确相对既有讨论增加了什么反证、条件、证据或立场变化；"
-                        f"speech 不得超过 {MAX_TRANSCRIPT_CONTENT_CHARS} 字，禁止复述原结论。"
+                        f"speech 不得超过 {MAX_ADVISOR_TURN_CHARS} 字，禁止复述原结论。"
                     )
                     retried = provider.complete(
                         retry_messages,
@@ -1076,7 +1120,7 @@ def run_round(
             except ProviderError:
                 content, prov, model = (f"（{advisor.name}·本地占位）外部模型暂时不可用。", "local-fallback", None)
                 novelty, delta_type, delta = "low", "none", ""
-        content = _bounded_text(content, MAX_TRANSCRIPT_CONTENT_CHARS)
+        content = _bounded_text(content, MAX_ADVISOR_TURN_CHARS)
         delta = _bounded_text(delta, MAX_SUMMARY_ITEM_CHARS)
         target_id = str((target or {}).get("entry_id") or "")
         target_name = str((target or {}).get("speaker_name") or "")
